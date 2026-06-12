@@ -11,9 +11,12 @@ import { User } from './user.entity';
 import { Workspace } from './workspace.entity';
 
 /**
- * A connection to an external application (Gmail, Stripe, Shopify, …) owned by a
- * user within a workspace.
+ * A connection to an external application (Gmail, Stripe, Shopify, …) connected
+ * through Pipedream Connect and shared across a workspace.
  */
+@Index('UQ_integrations_workspace_account', ['workspaceId', 'externalAccountId'], {
+  unique: true,
+})
 @Entity({ name: 'integrations' })
 export class Integration {
   @PrimaryGeneratedColumn('uuid')
@@ -35,6 +38,13 @@ export class Integration {
 
   @Column({ type: 'varchar', length: 255, nullable: true })
   externalAccountId!: string | null;
+
+  /** The user-facing label of the connected account (from Pipedream). */
+  @Column({ type: 'varchar', length: 255, nullable: true })
+  accountName!: string | null;
+
+  @Column({ type: 'varchar', length: 1024, nullable: true })
+  iconUrl!: string | null;
 
   @Column({ type: 'boolean', default: true })
   isActive!: boolean;
