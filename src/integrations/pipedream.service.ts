@@ -19,6 +19,23 @@ import { AppConfig } from '../config/configuration';
 /** Fail fast rather than letting a dead connection hang on SDK retries. */
 const REQUEST_OPTIONS = { timeoutInSeconds: 20 };
 
+/** Pipedream's managed remote MCP server — one logical server per connected app. */
+const PIPEDREAM_MCP_BASE_URL = 'https://remote.mcp.pipedream.net/v3';
+
+/** A connected app exposed to an LLM as a Pipedream MCP server. */
+export interface PipedreamMcpServer {
+  appSlug: string;
+  name: string;
+  url: string;
+}
+
+/** A single action an app exposes — surfaced as an MCP tool to the LLM. */
+export interface AppTool {
+  key: string;
+  name: string;
+  description?: string;
+}
+
 /**
  * Thin wrapper over the Pipedream Connect SDK. Owns the single backend client
  * and exposes the few operations the integrations module needs: minting
@@ -141,6 +158,59 @@ export class PipedreamService implements OnModuleInit {
       return {
         apps: page.data,
         after: page.hasNextPage() ? page.response.pageInfo?.endCursor : undefined,
+      };
+    });
+  }
+
+  /**
+   * List the actions an app exposes. These are the same components Pipedream's
+   * remote MCP server turns into tools, so this answers "what can Viktor do with
+   * this app?" for the UI. Returns one page plus the cursor for the next.
+   */
+  listAppTools(appSlug: string, after?: string): Promise<{ tools: AppTool[]; after?: string }> {
+    return this.run('actions.list', async (client) => {
+      const page = await client.actions.list(
+        { app: appSlug, after: after || undefined, limit: 100 },
+        REQUEST_OPTIONS,
+      );
+      return {
+        tools: page.data.map((action) => ({
+          key: action.key,
+          name: action.name,
+          description: action.description ?? undefined,
+        })),
+        after: page.hasNextPage() ? page.response.pageInfo?.endCursor : undefined,
+      };
+    });
+  }
+
+  /**
+   * A short-lived Pipedream API access token. Used as the bearer credential when
+   * an LLM connects to Pipedream's remote MCP server on a workspace's behalf.
+   */
+  getAccessToken(): Promise<string> {
+    return this.run('rawAccessToken', (client) => client.rawAccessToken);
+  }
+
+  /**
+   * Build the Pipedream MCP server descriptors for a workspace's connected apps.
+   * Pipedream accepts its routing parameters as query string values (only the
+   * bearer token must be a header), so each app maps to one MCP URL the LLM can
+   * point at directly. The caller pairs these with {@link getAccessToken}.
+   */
+  buildMcpServers(workspaceId: string, appSlugs: string[]): PipedreamMcpServer[] {
+    const pd = this.configService.get('pipedream', { infer: true });
+    return appSlugs.map((appSlug) => {
+      const params = new URLSearchParams({
+        projectId: pd.projectId,
+        environment: pd.environment,
+        externalUserId: workspaceId,
+        app: appSlug,
+      });
+      return {
+        appSlug,
+        name: `pipedream-${appSlug}`,
+        url: `${PIPEDREAM_MCP_BASE_URL}?${params.toString()}`,
       };
     });
   }

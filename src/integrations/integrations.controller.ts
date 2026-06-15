@@ -5,6 +5,7 @@ import { CurrentUser } from '../common/decorators';
 import { Integration } from '../database/entities';
 import { ConfirmConnectionDto } from './dto';
 import { ConnectedIntegrationView, IntegrationsService } from './integrations.service';
+import { AppTool } from './pipedream.service';
 
 @ApiTags('integrations')
 @Controller('integrations')
@@ -24,6 +25,15 @@ export class IntegrationsController {
     @Query('after') after?: string,
   ): Promise<{ apps: App[]; after?: string }> {
     return this.integrationsService.listApps(query, after);
+  }
+
+  /** List the actions/tools an app exposes, so the UI can show its capabilities. */
+  @Get(':appSlug/tools')
+  listAppTools(
+    @Param('appSlug') appSlug: string,
+    @Query('after') after?: string,
+  ): Promise<{ tools: AppTool[]; after?: string }> {
+    return this.integrationsService.listAppTools(appSlug, after);
   }
 
   /** Mint a single-use Pipedream Connect token for the current workspace. */

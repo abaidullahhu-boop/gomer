@@ -9,6 +9,6 @@ import { PipedreamService } from './pipedream.service';
   imports: [TypeOrmModule.forFeature([Integration])],
   controllers: [IntegrationsController],
   providers: [IntegrationsService, PipedreamService],
-  exports: [IntegrationsService],
+  exports: [IntegrationsService, PipedreamService],
 })
 export class IntegrationsModule {}

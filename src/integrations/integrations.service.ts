@@ -4,7 +4,7 @@ import { App, CreateTokenResponse } from '@pipedream/sdk';
 import { Repository } from 'typeorm';
 import { Integration } from '../database/entities';
 import { ConfirmConnectionDto } from './dto';
-import { PipedreamService } from './pipedream.service';
+import { AppTool, PipedreamService } from './pipedream.service';
 
 /** A connected account, enriched with the member who connected it. */
 export interface ConnectedIntegrationView {
@@ -63,6 +63,11 @@ export class IntegrationsService {
   /** Search the Pipedream app catalogue for the connect UI. */
   listApps(query?: string, after?: string): Promise<{ apps: App[]; after?: string }> {
     return this.pipedream.listApps(query, after);
+  }
+
+  /** List the actions/tools a given app exposes, for the "what can it do?" UI. */
+  listAppTools(appSlug: string, after?: string): Promise<{ tools: AppTool[]; after?: string }> {
+    return this.pipedream.listAppTools(appSlug, after);
   }
 
   /**

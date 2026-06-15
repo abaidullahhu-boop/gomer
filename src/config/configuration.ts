@@ -38,6 +38,10 @@ export interface AppConfig {
     projectId: string;
     environment: string;
   };
+  ai: {
+    anthropicApiKey: string;
+    model: string;
+  };
 }
 
 export const configuration = (): AppConfig => ({
@@ -75,5 +79,9 @@ export const configuration = (): AppConfig => ({
     clientSecret: process.env.PIPEDREAM_CLIENT_SECRET ?? '',
     projectId: process.env.PIPEDREAM_PROJECT_ID ?? '',
     environment: process.env.PIPEDREAM_ENVIRONMENT ?? 'development',
+  },
+  ai: {
+    anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? '',
+    model: process.env.AI_MODEL ?? 'claude-opus-4-8',
   },
 });
