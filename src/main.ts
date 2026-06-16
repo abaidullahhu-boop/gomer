@@ -36,7 +36,7 @@ async function bootstrap(): Promise<void> {
   // OpenAPI / Swagger docs — disabled in production.
   if (nodeEnv !== 'production') {
     const swaggerConfig = new DocumentBuilder()
-      .setTitle('hektor.ai API')
+      .setTitle('gomer.ai API')
       .setDescription('AI coworker platform backend API')
       .setVersion('0.1.0')
       .addBearerAuth(
@@ -67,7 +67,7 @@ async function bootstrap(): Promise<void> {
   app.enableShutdownHooks();
 
   await app.listen(port);
-  logger.log(`hektor.ai backend running on http://localhost:${port} [${nodeEnv}]`);
+  logger.log(`gomer.ai backend running on http://localhost:${port} [${nodeEnv}]`);
 }
 
 void bootstrap();

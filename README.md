@@ -1,6 +1,6 @@
-# hektor.ai — Backend
+# gomer.ai — Backend
 
-AI coworker platform. Users install hektor.ai into their **Slack** workspace,
+AI coworker platform. Users install gomer.ai into their **Slack** workspace,
 connect external apps (Gmail, Stripe, Shopify, eBay, Amazon, …), and automate
 tasks through an AI assistant. The system is **multi-tenant**, with each tenant
 (`Workspace`) bound 1:1 to a Slack workspace. Authentication is **Slack OAuth

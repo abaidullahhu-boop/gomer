@@ -1,8 +1,8 @@
 {
-  "name": "hektor-backend",
+  "name": "gomer-backend",
   "version": "0.1.0",
-  "description": "hektor.ai — AI coworker platform backend (NestJS)",
-  "author": "hektor.ai",
+  "description": "gomer.ai — AI coworker platform backend (NestJS)",
+  "author": "gomer.ai",
   "private": true,
   "license": "UNLICENSED",
   "scripts": {

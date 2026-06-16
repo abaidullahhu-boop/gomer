@@ -9,9 +9,9 @@ import { UsageService } from '../usage/usage.service';
 /** Beta flag enabling the remote MCP connector on the Messages API. */
 const MCP_BETA = 'mcp-client-2025-11-20';
 
-const SYSTEM_PROMPT = `You are Viktor, an AI assistant for a workspace. You can take actions across the user's connected apps using the available tools. Prefer acting over describing: when a request maps to a tool, use it. When you lack a connected app needed for a request, say so plainly and name the app to connect. Keep replies concise.`;
+const SYSTEM_PROMPT = `You are Gomer, an AI assistant for a workspace. You can take actions across the user's connected apps using the available tools. Prefer acting over describing: when a request maps to a tool, use it. When you lack a connected app needed for a request, say so plainly and name the app to connect. Keep replies concise.`;
 
-/** A tool the model invoked during a run, for surfacing what Viktor did. */
+/** A tool the model invoked during a run, for surfacing what Gomer did. */
 export interface AiAction {
   app: string;
   tool: string;
@@ -26,7 +26,7 @@ export interface AiRunResult {
 }
 
 /**
- * Orchestrates Viktor's model calls. Connected integrations are exposed to
+ * Orchestrates Gomer's model calls. Connected integrations are exposed to
  * Claude as Pipedream remote-MCP servers (one per app), so the model can act on
  * a workspace's apps directly. The client is built lazily so the app boots
  * without an Anthropic key.
@@ -61,7 +61,7 @@ export class AiService {
 
   /**
    * Run a single prompt for a workspace, exposing its connected apps as tools,
-   * and return Viktor's answer plus the actions it took.
+   * and return Gomer's answer plus the actions it took.
    */
   async run(workspaceId: string, userId: string | null, prompt: string): Promise<AiRunResult> {
     const ai = this.configService.get('ai', { infer: true });

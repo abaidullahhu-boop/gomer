@@ -1,30 +1,47 @@
 services:
   postgres:
     image: postgres:16-alpine
-    container_name: hektor-postgres
+    container_name: gomer-postgres
     restart: unless-stopped
+    # Make the kernel OOM killer strongly prefer other processes (e.g. Chrome)
+    # over this DB when host memory spikes. Range -1000 (never) .. 1000 (first).
+    oom_score_adj: -800
+    # Docker defaults /dev/shm to 64MB; Postgres can crash-loop under parallel
+    # queries with "could not resize shared memory segment" without more.
+    shm_size: 256mb
     environment:
-      POSTGRES_DB: ${DATABASE_NAME:-hektor}
+      POSTGRES_DB: ${DATABASE_NAME:-gomer}
       POSTGRES_USER: ${DATABASE_USER:-postgres}
       POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-password}
     ports:
       - '${DATABASE_PORT:-5432}:5432'
     volumes:
-      - hektor-postgres-data:/var/lib/postgresql/data
+      - gomer-postgres-data:/var/lib/postgresql/data
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U ${DATABASE_USER:-postgres} -d ${DATABASE_NAME:-hektor}']
+      test: ['CMD-SHELL', 'pg_isready -U ${DATABASE_USER:-postgres} -d ${DATABASE_NAME:-gomer}']
       interval: 10s
       timeout: 5s
       retries: 5
 
   redis:
     image: redis:7-alpine
-    container_name: hektor-redis
+    container_name: gomer-redis
     restart: unless-stopped
+    # Protect Redis from the OOM killer too, and cap its memory so it can't
+    # grow unbounded and become the trigger.
+    oom_score_adj: -800
+    command:
+      [
+        'redis-server',
+        '--maxmemory',
+        '256mb',
+        '--maxmemory-policy',
+        'allkeys-lru',
+      ]
     ports:
       - '${REDIS_PORT:-6379}:6379'
     volumes:
-      - hektor-redis-data:/data
+      - gomer-redis-data:/data
     healthcheck:
       test: ['CMD', 'redis-cli', 'ping']
       interval: 10s
@@ -32,5 +49,5 @@ services:
       retries: 5
 
 volumes:
-  hektor-postgres-data:
-  hektor-redis-data:
+  gomer-postgres-data:
+  gomer-redis-data:
