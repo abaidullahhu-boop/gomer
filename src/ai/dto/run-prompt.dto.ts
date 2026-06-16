@@ -1,6 +1,6 @@
 import { IsNotEmpty, IsString, MaxLength } from 'class-validator';
 
-/** A natural-language instruction for Viktor to act on. */
+/** A natural-language instruction for Gomer to act on. */
 export class RunPromptDto {
   @IsString()
   @IsNotEmpty()

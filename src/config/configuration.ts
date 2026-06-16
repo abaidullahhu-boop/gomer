@@ -53,10 +53,10 @@ export const configuration = (): AppConfig => ({
   database: {
     host: process.env.DATABASE_HOST ?? 'localhost',
     port: parseInt(process.env.DATABASE_PORT ?? '5432', 10),
-    name: process.env.DATABASE_NAME ?? 'hektor',
+    name: process.env.DATABASE_NAME ?? 'gomer',
     user: process.env.DATABASE_USER ?? 'postgres',
     password: process.env.DATABASE_PASSWORD ?? 'password',
-    url: process.env.DATABASE_URL ?? 'postgresql://postgres:password@localhost:5432/hektor',
+    url: process.env.DATABASE_URL ?? 'postgresql://postgres:password@localhost:5432/gomer',
   },
   redis: {
     host: process.env.REDIS_HOST ?? 'localhost',

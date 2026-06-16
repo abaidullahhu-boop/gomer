@@ -42,7 +42,7 @@ export interface AppTool {
  * connect tokens, reading/removing a workspace's connected accounts, and
  * proxying the app catalogue.
  *
- * The `external_user_id` we pass to Pipedream is always the hektor workspace id,
+ * The `external_user_id` we pass to Pipedream is always the gomer workspace id,
  * so connections are shared by every member of a workspace.
  *
  * The client is built lazily: when credentials are absent the app still boots
@@ -164,7 +164,7 @@ export class PipedreamService implements OnModuleInit {
 
   /**
    * List the actions an app exposes. These are the same components Pipedream's
-   * remote MCP server turns into tools, so this answers "what can Viktor do with
+   * remote MCP server turns into tools, so this answers "what can Gomer do with
    * this app?" for the UI. Returns one page plus the cursor for the next.
    */
   listAppTools(appSlug: string, after?: string): Promise<{ tools: AppTool[]; after?: string }> {

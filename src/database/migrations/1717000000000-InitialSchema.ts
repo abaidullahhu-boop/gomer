@@ -1,7 +1,7 @@
 import { MigrationInterface, QueryRunner } from 'typeorm';
 
 /**
- * Initial schema for hektor.ai covering all Phase 1 entities:
+ * Initial schema for gomer.ai covering all Phase 1 entities:
  * workspaces, users, integrations, skills, user_skills, scheduled_tasks,
  * credit_events and messages.
  *
