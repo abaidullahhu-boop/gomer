@@ -10,6 +10,7 @@ import { CreditEvent } from './credit-event.entity';
 import { Integration } from './integration.entity';
 import { Message } from './message.entity';
 import { ScheduledTask } from './scheduled-task.entity';
+import { Space } from './space.entity';
 import { User } from './user.entity';
 
 /**
@@ -64,4 +65,7 @@ export class Workspace {
 
   @OneToMany(() => Message, (message) => message.workspace)
   messages!: Message[];
+
+  @OneToMany(() => Space, (space) => space.workspace)
+  spaces!: Space[];
 }

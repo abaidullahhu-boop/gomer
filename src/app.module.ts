@@ -14,6 +14,7 @@ import { IntegrationsModule } from './integrations/integrations.module';
 import { RedisModule } from './redis/redis.module';
 import { SkillsModule } from './skills/skills.module';
 import { SlackModule } from './slack/slack.module';
+import { SpacesModule } from './spaces/spaces.module';
 import { TasksModule } from './tasks/tasks.module';
 import { UsageModule } from './usage/usage.module';
 import { UsersModule } from './users/users.module';
@@ -34,6 +35,7 @@ import { WorkspacesModule } from './workspaces/workspaces.module';
     WorkspacesModule,
     IntegrationsModule,
     SkillsModule,
+    SpacesModule,
     TasksModule,
     AiModule,
     SlackModule,

@@ -42,8 +42,10 @@ export interface AppTool {
  * connect tokens, reading/removing a workspace's connected accounts, and
  * proxying the app catalogue.
  *
- * The `external_user_id` we pass to Pipedream is always the gomer workspace id,
- * so connections are shared by every member of a workspace.
+ * The `external_user_id` we pass to Pipedream is the gomer workspace id for
+ * `team` accounts (shared by every member) and a per-user namespace for
+ * `private` accounts (see {@link PipedreamService.privateExternalUserId}), so
+ * access isolation holds at the Pipedream boundary, not just in our queries.
  *
  * The client is built lazily: when credentials are absent the app still boots
  * (mirroring the Slack module), and only the integration endpoints fail.
@@ -54,6 +56,15 @@ export class PipedreamService implements OnModuleInit {
   private client: PipedreamClient | null = null;
 
   constructor(private readonly configService: ConfigService<AppConfig, true>) {}
+
+  /**
+   * The Pipedream `external_user_id` a member's `private` accounts live under.
+   * Namespaced so it can never collide with a workspace id, giving private
+   * accounts their own isolated bucket at Pipedream.
+   */
+  static privateExternalUserId(userId: string): string {
+    return `u:${userId}`;
+  }
 
   onModuleInit(): void {
     const pd = this.configService.get('pipedream', { infer: true });
@@ -102,18 +113,18 @@ export class PipedreamService implements OnModuleInit {
     }
   }
 
-  /** Mint a single-use Connect token scoped to a workspace (external user). */
-  createConnectToken(workspaceId: string): Promise<CreateTokenResponse> {
+  /** Mint a single-use Connect token scoped to an external user. */
+  createConnectToken(externalUserId: string): Promise<CreateTokenResponse> {
     return this.run('tokens.create', (client) =>
-      client.tokens.create({ externalUserId: workspaceId }, REQUEST_OPTIONS),
+      client.tokens.create({ externalUserId }, REQUEST_OPTIONS),
     );
   }
 
-  /** List every connected account belonging to a workspace. */
-  listAccounts(workspaceId: string): Promise<Account[]> {
+  /** List every connected account belonging to an external user. */
+  listAccounts(externalUserId: string): Promise<Account[]> {
     return this.run('accounts.list', async (client) => {
       const accounts: Account[] = [];
-      const page = await client.accounts.list({ externalUserId: workspaceId }, REQUEST_OPTIONS);
+      const page = await client.accounts.list({ externalUserId }, REQUEST_OPTIONS);
       for await (const account of page) {
         accounts.push(account);
       }
@@ -122,13 +133,13 @@ export class PipedreamService implements OnModuleInit {
   }
 
   /**
-   * Fetch a single account, scoped to the workspace that should own it. We look
-   * it up within the workspace's account list (rather than `retrieve`, which
-   * can't filter by external user) so a workspace can only confirm accounts that
-   * actually belong to it. Returns null if no such account exists.
+   * Fetch a single account, scoped to the external user that should own it. We
+   * look it up within that external user's account list (rather than `retrieve`,
+   * which can't filter by external user) so a caller can only confirm accounts
+   * that actually belong to the scope it claims. Returns null if none exists.
    */
-  async getAccount(accountId: string, workspaceId: string): Promise<Account | null> {
-    const accounts = await this.listAccounts(workspaceId);
+  async getAccount(accountId: string, externalUserId: string): Promise<Account | null> {
+    const accounts = await this.listAccounts(externalUserId);
     return accounts.find((account) => account.id === accountId) ?? null;
   }
 
@@ -193,23 +204,28 @@ export class PipedreamService implements OnModuleInit {
   }
 
   /**
-   * Build the Pipedream MCP server descriptors for a workspace's connected apps.
-   * Pipedream accepts its routing parameters as query string values (only the
-   * bearer token must be a header), so each app maps to one MCP URL the LLM can
-   * point at directly. The caller pairs these with {@link getAccessToken}.
+   * Build the Pipedream MCP server descriptors for an external user's connected
+   * apps. Pipedream accepts its routing parameters as query string values (only
+   * the bearer token must be a header), so each app maps to one MCP URL the LLM
+   * can point at directly. The caller pairs these with {@link getAccessToken}.
+   *
+   * The server name is keyed by both the app and the external user so the same
+   * app connected under two scopes (e.g. a team and a private account) produces
+   * two distinct, non-colliding servers.
    */
-  buildMcpServers(workspaceId: string, appSlugs: string[]): PipedreamMcpServer[] {
+  buildMcpServers(externalUserId: string, appSlugs: string[]): PipedreamMcpServer[] {
     const pd = this.configService.get('pipedream', { infer: true });
+    const scope = externalUserId.replace(/[^a-zA-Z0-9_-]/g, '_');
     return appSlugs.map((appSlug) => {
       const params = new URLSearchParams({
         projectId: pd.projectId,
         environment: pd.environment,
-        externalUserId: workspaceId,
+        externalUserId,
         app: appSlug,
       });
       return {
         appSlug,
-        name: `pipedream-${appSlug}`,
+        name: `pipedream-${scope}-${appSlug}`,
         url: `${PIPEDREAM_MCP_BASE_URL}?${params.toString()}`,
       };
     });

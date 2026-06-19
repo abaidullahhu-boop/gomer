@@ -18,7 +18,7 @@
     "migration:create": "typeorm-ts-node-commonjs migration:create",
     "migration:run": "npm run typeorm -- migration:run",
     "migration:revert": "npm run typeorm -- migration:revert",
-    "test": "echo \"No tests configured yet\" && exit 0"
+    "test": "ts-node test/run-tests.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.104.1",

@@ -3,7 +3,7 @@ import { ApiTags } from '@nestjs/swagger';
 import { App, CreateTokenResponse } from '@pipedream/sdk';
 import { CurrentUser } from '../common/decorators';
 import { Integration } from '../database/entities';
-import { ConfirmConnectionDto } from './dto';
+import { ConfirmConnectionDto, ConnectTokenDto } from './dto';
 import { ConnectedIntegrationView, IntegrationsService } from './integrations.service';
 import { AppTool } from './pipedream.service';
 
@@ -12,10 +12,13 @@ import { AppTool } from './pipedream.service';
 export class IntegrationsController {
   constructor(private readonly integrationsService: IntegrationsService) {}
 
-  /** List the connected integrations for the current workspace. */
+  /** List the integrations the current member may see (team + own private). */
   @Get()
-  list(@CurrentUser('workspaceId') workspaceId: string): Promise<ConnectedIntegrationView[]> {
-    return this.integrationsService.findAllForWorkspace(workspaceId);
+  list(
+    @CurrentUser('workspaceId') workspaceId: string,
+    @CurrentUser('userId') userId: string,
+  ): Promise<ConnectedIntegrationView[]> {
+    return this.integrationsService.findVisibleForUser(workspaceId, userId);
   }
 
   /** Search the Pipedream app catalogue for the connect UI. */
@@ -36,10 +39,14 @@ export class IntegrationsController {
     return this.integrationsService.listAppTools(appSlug, after);
   }
 
-  /** Mint a single-use Pipedream Connect token for the current workspace. */
+  /** Mint a single-use Pipedream Connect token for the current member's scope. */
   @Post('connect-token')
-  connectToken(@CurrentUser('workspaceId') workspaceId: string): Promise<CreateTokenResponse> {
-    return this.integrationsService.getConnectToken(workspaceId);
+  connectToken(
+    @CurrentUser('workspaceId') workspaceId: string,
+    @CurrentUser('userId') userId: string,
+    @Body() dto: ConnectTokenDto,
+  ): Promise<CreateTokenResponse> {
+    return this.integrationsService.getConnectToken(workspaceId, userId, dto.accessLevel);
   }
 
   /** Persist a connection after the Pipedream popup succeeds. */

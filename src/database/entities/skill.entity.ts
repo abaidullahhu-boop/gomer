@@ -1,4 +1,11 @@
-import { Column, CreateDateColumn, Entity, OneToMany, PrimaryGeneratedColumn } from 'typeorm';
+import {
+  Column,
+  CreateDateColumn,
+  Entity,
+  Index,
+  OneToMany,
+  PrimaryGeneratedColumn,
+} from 'typeorm';
 import { UserSkill } from './user-skill.entity';
 
 /**
@@ -9,6 +16,11 @@ import { UserSkill } from './user-skill.entity';
 export class Skill {
   @PrimaryGeneratedColumn('uuid')
   id!: string;
+
+  /** Stable, human-readable identifier used by the frontend for keys and routes. */
+  @Index({ unique: true })
+  @Column({ type: 'varchar', length: 255 })
+  slug!: string;
 
   @Column({ type: 'varchar', length: 255 })
   name!: string;

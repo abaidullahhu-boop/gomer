@@ -4,12 +4,18 @@ import Anthropic from '@anthropic-ai/sdk';
 import { AppConfig } from '../config/configuration';
 import { IntegrationsService } from '../integrations/integrations.service';
 import { PipedreamService } from '../integrations/pipedream.service';
+import { SpacesService } from '../spaces/spaces.service';
 import { UsageService } from '../usage/usage.service';
+import { SPACE_TOOLS } from './space-tools';
 
 /** Beta flag enabling the remote MCP connector on the Messages API. */
 const MCP_BETA = 'mcp-client-2025-11-20';
 
-const SYSTEM_PROMPT = `You are Gomer, an AI assistant for a workspace. You can take actions across the user's connected apps using the available tools. Prefer acting over describing: when a request maps to a tool, use it. When you lack a connected app needed for a request, say so plainly and name the app to connect. Keep replies concise.`;
+const SYSTEM_PROMPT = `You are Gomer, an AI assistant for a workspace. You can take actions across the user's connected apps using the available tools. Prefer acting over describing: when a request maps to a tool, use it. When you lack a connected app needed for a request, say so plainly and name the app to connect.
+
+You can also build "Spaces" — full web apps with their own database, passwordless (magic-link) login, and hosting — using the create_space tool. Spaces suit CRUD/form/dashboard internal tools (e.g. a time logger, lead tracker, or content calendar). Describe the app as entities (data types with typed fields) and views (forms, tables, dashboards). Never invent or share end-user passwords; logins are always magic links. After building a Space, give the user its link.
+
+Keep replies concise.`;
 
 /** A tool the model invoked during a run, for surfacing what Gomer did. */
 export interface AiAction {
@@ -18,11 +24,20 @@ export interface AiAction {
   isError: boolean;
 }
 
+/** A Space created during a run, surfaced so the chat can link to it. */
+export interface AiSpace {
+  slug: string;
+  name: string;
+  url: string;
+}
+
 export interface AiRunResult {
   answer: string;
   /** App slugs whose tools were made available for this run. */
   connectedApps: string[];
   actions: AiAction[];
+  /** Spaces Gomer built during this run. */
+  spaces: AiSpace[];
 }
 
 /**
@@ -40,6 +55,7 @@ export class AiService {
     private readonly configService: ConfigService<AppConfig, true>,
     private readonly integrationsService: IntegrationsService,
     private readonly pipedream: PipedreamService,
+    private readonly spacesService: SpacesService,
     private readonly usageService: UsageService,
   ) {}
 
@@ -67,11 +83,30 @@ export class AiService {
     const ai = this.configService.get('ai', { infer: true });
     const client = this.getClient();
 
-    // Distinct connected app slugs become MCP servers for this run.
-    const connected = await this.integrationsService.findAllForWorkspace(workspaceId);
-    const appSlugs = [...new Set(connected.filter((c) => c.isActive).map((c) => c.appSlug))];
+    // Only the accounts this member may use become tools: every team account
+    // plus their own private ones. Each scope lives under a different Pipedream
+    // external user, so we build MCP servers per scope — a private account is
+    // unreachable from another member's run.
+    const connected = (
+      await this.integrationsService.findVisibleForUser(workspaceId, userId ?? '')
+    ).filter((c) => c.isActive);
+    const teamSlugs = [
+      ...new Set(connected.filter((c) => c.accessLevel === 'team').map((c) => c.appSlug)),
+    ];
+    const privateSlugs = userId
+      ? [...new Set(connected.filter((c) => c.accessLevel === 'private').map((c) => c.appSlug))]
+      : [];
 
-    const servers = appSlugs.length ? this.pipedream.buildMcpServers(workspaceId, appSlugs) : [];
+    const servers = [
+      ...(teamSlugs.length ? this.pipedream.buildMcpServers(workspaceId, teamSlugs) : []),
+      ...(privateSlugs.length && userId
+        ? this.pipedream.buildMcpServers(
+            PipedreamService.privateExternalUserId(userId),
+            privateSlugs,
+          )
+        : []),
+    ];
+    const appSlugs = [...new Set(servers.map((server) => server.appSlug))];
     const accessToken = servers.length ? await this.pipedream.getAccessToken() : null;
 
     const mcpServers = servers.map((server) => ({
@@ -80,22 +115,30 @@ export class AiService {
       name: server.name,
       authorization_token: accessToken ?? undefined,
     }));
-    const tools = servers.map((server) => ({
-      type: 'mcp_toolset' as const,
-      mcp_server_name: server.name,
-    }));
+    // Connected apps become server-side MCP toolsets; Spaces tools are local
+    // (custom) tools we execute ourselves and feed results back.
+    const tools: Anthropic.Beta.BetaToolUnion[] = [
+      ...servers.map((server) => ({
+        type: 'mcp_toolset' as const,
+        mcp_server_name: server.name,
+      })),
+      ...SPACE_TOOLS,
+    ];
 
     const messages: Anthropic.Beta.BetaMessageParam[] = [{ role: 'user', content: prompt }];
     const actions: AiAction[] = [];
+    const spaces: AiSpace[] = [];
     let answer = '';
     let tokensUsed = 0;
 
-    // The MCP connector runs a server-side tool loop; if it hits the per-turn
-    // iteration cap it returns `pause_turn`, which we resume by re-sending.
+    // Two reasons to loop: the MCP connector returns `pause_turn` when it hits
+    // its per-turn iteration cap, and a local Spaces tool call returns
+    // `tool_use` — in both cases we re-send the accumulated conversation.
     for (let i = 0; i < 6; i += 1) {
       const response = await this.create(client, ai.model, messages, mcpServers, tools);
       tokensUsed += response.usage.input_tokens + response.usage.output_tokens;
 
+      const toolUses: Anthropic.Beta.BetaToolUseBlock[] = [];
       for (const block of response.content) {
         if (block.type === 'text') {
           answer += block.text;
@@ -104,16 +147,76 @@ export class AiService {
         } else if (block.type === 'mcp_tool_result') {
           const last = actions[actions.length - 1];
           if (last) last.isError = block.is_error ?? false;
+        } else if (block.type === 'tool_use') {
+          toolUses.push(block);
         }
       }
 
-      if (response.stop_reason !== 'pause_turn') break;
-      messages.push({ role: 'assistant', content: response.content });
+      if (response.stop_reason === 'tool_use' && toolUses.length) {
+        messages.push({ role: 'assistant', content: response.content });
+        const results: Anthropic.Beta.BetaToolResultBlockParam[] = [];
+        for (const toolUse of toolUses) {
+          results.push(await this.runSpaceTool(workspaceId, userId, toolUse, spaces));
+        }
+        messages.push({ role: 'user', content: results });
+        continue;
+      }
+
+      if (response.stop_reason === 'pause_turn') {
+        messages.push({ role: 'assistant', content: response.content });
+        continue;
+      }
+
+      break;
     }
 
     await this.recordUsage(workspaceId, userId, ai.model, tokensUsed);
 
-    return { answer: answer.trim(), connectedApps: appSlugs, actions };
+    return { answer: answer.trim(), connectedApps: appSlugs, actions, spaces };
+  }
+
+  /**
+   * Execute a local Spaces tool call and return its tool_result. Creating a
+   * Space validates the AI's spec before persisting; a bad spec becomes an error
+   * result the model can read and correct, never a failed request.
+   */
+  private async runSpaceTool(
+    workspaceId: string,
+    userId: string | null,
+    toolUse: Anthropic.Beta.BetaToolUseBlock,
+    spaces: AiSpace[],
+  ): Promise<Anthropic.Beta.BetaToolResultBlockParam> {
+    const input = (toolUse.input ?? {}) as Record<string, unknown>;
+    try {
+      let slug: string;
+      let name: string;
+      if (toolUse.name === 'update_space') {
+        const { slug: target, ...spec } = input;
+        const space = await this.spacesService.updateSpec(workspaceId, String(target), spec);
+        slug = space.slug;
+        name = space.name;
+      } else {
+        const space = await this.spacesService.createFromSpec(workspaceId, userId, input);
+        slug = space.slug;
+        name = space.name;
+      }
+      const url = this.spacesService.spaceUrl(slug);
+      spaces.push({ slug, name, url });
+      return {
+        type: 'tool_result',
+        tool_use_id: toolUse.id,
+        content: `Space "${name}" is live at ${url}`,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Space tool ${toolUse.name} failed: ${message}`);
+      return {
+        type: 'tool_result',
+        tool_use_id: toolUse.id,
+        content: `Failed to build the Space: ${message}`,
+        is_error: true,
+      };
+    }
   }
 
   /**
@@ -146,7 +249,7 @@ export class AiService {
     model: string,
     messages: Anthropic.Beta.BetaMessageParam[],
     mcpServers: Array<{ type: 'url'; url: string; name: string; authorization_token?: string }>,
-    tools: Array<{ type: 'mcp_toolset'; mcp_server_name: string }>,
+    tools: Anthropic.Beta.BetaToolUnion[],
   ): Promise<Anthropic.Beta.BetaMessage> {
     try {
       return await client.beta.messages.create({
@@ -155,7 +258,8 @@ export class AiService {
         thinking: { type: 'adaptive' },
         system: SYSTEM_PROMPT,
         messages,
-        ...(mcpServers.length ? { mcp_servers: mcpServers, tools } : {}),
+        ...(tools.length ? { tools } : {}),
+        ...(mcpServers.length ? { mcp_servers: mcpServers } : {}),
         betas: [MCP_BETA],
       });
     } catch (error) {

@@ -1,8 +1,20 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { FindOptionsWhere, Repository } from 'typeorm';
+import { FindOptionsWhere, Not, Repository } from 'typeorm';
 import { UserRole } from '../common/enums';
 import { User } from '../database/entities';
+
+/** A workspace member as exposed to the team-management UI (no secrets). */
+export interface TeamMemberView {
+  id: string;
+  name: string;
+  email: string | null;
+  avatarUrl: string | null;
+  role: UserRole;
+  isCurrentUser: boolean;
+  lastActiveAt: Date | null;
+  createdAt: Date;
+}
 
 export interface UpsertUserFromSlackInput {
   workspaceId: string;
@@ -39,6 +51,63 @@ export class UsersService {
 
   countByWorkspace(workspaceId: string): Promise<number> {
     return this.userRepository.count({ where: { workspaceId } });
+  }
+
+  /** Strips secrets and flags the caller for the team-management UI. */
+  toTeamMemberView(member: User, currentUserId: string): TeamMemberView {
+    return {
+      id: member.id,
+      name: member.name,
+      email: member.email,
+      avatarUrl: member.avatarUrl,
+      role: member.role,
+      isCurrentUser: member.id === currentUserId,
+      lastActiveAt: member.lastActiveAt,
+      createdAt: member.createdAt,
+    };
+  }
+
+  /** Active members of a workspace, oldest first (the first member is the founding admin). */
+  listByWorkspace(workspaceId: string): Promise<User[]> {
+    return this.userRepository.find({
+      where: { workspaceId, isActive: true },
+      order: { createdAt: 'ASC' },
+    });
+  }
+
+  /**
+   * Changes a member's role within a workspace. Only callable by an admin (enforced
+   * at the controller). Refuses to demote the workspace's last remaining admin so a
+   * team can never be left without one.
+   */
+  async updateRole(workspaceId: string, targetUserId: string, role: UserRole): Promise<User> {
+    const target = await this.userRepository.findOne({
+      where: { id: targetUserId, workspaceId },
+    });
+    if (!target) {
+      throw new NotFoundException(`User ${targetUserId} not found in this workspace`);
+    }
+
+    if (target.role === role) {
+      return target;
+    }
+
+    if (target.role === UserRole.ADMIN && role === UserRole.MEMBER) {
+      const otherAdmins = await this.userRepository.count({
+        where: {
+          workspaceId,
+          role: UserRole.ADMIN,
+          isActive: true,
+          id: Not(targetUserId),
+        },
+      });
+      if (otherAdmins === 0) {
+        throw new BadRequestException('A workspace must have at least one admin');
+      }
+    }
+
+    target.role = role;
+    return this.userRepository.save(target);
   }
 
   /**
