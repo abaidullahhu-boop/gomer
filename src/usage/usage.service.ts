@@ -17,6 +17,8 @@ const TOKENS_PER_CREDIT = 1000;
 export interface RecordUsageInput {
   workspaceId: string;
   userId?: string | null;
+  /** The scheduled task that spent the credits, when the run came from one. */
+  taskId?: string | null;
   model: string;
   tokensUsed: number;
   /** Human label for what spent the credits, e.g. an app or feature name. */
@@ -42,6 +44,7 @@ export class UsageService {
     const event = this.creditEventRepository.create({
       workspaceId: input.workspaceId,
       userId: input.userId ?? null,
+      taskId: input.taskId ?? null,
       type: input.type ?? CreditEventType.THREAD,
       sourceName: input.sourceName,
       tokensUsed: input.tokensUsed,

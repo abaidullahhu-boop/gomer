@@ -7,7 +7,8 @@ import { AppModule } from './app.module';
 import { AppConfig } from './config/configuration';
 
 async function bootstrap(): Promise<void> {
-  const app = await NestFactory.create(AppModule, { bufferLogs: false });
+  // rawBody is needed to verify Slack request signatures (HMAC over the raw payload).
+  const app = await NestFactory.create(AppModule, { bufferLogs: false, rawBody: true });
   const logger = new Logger('Bootstrap');
 
   const configService = app.get(ConfigService<AppConfig, true>);
@@ -39,10 +40,7 @@ async function bootstrap(): Promise<void> {
       .setTitle('gomer.ai API')
       .setDescription('AI coworker platform backend API')
       .setVersion('0.1.0')
-      .addBearerAuth(
-        { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
-        'access-token',
-      )
+      .addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT' }, 'access-token')
       .build();
 
     const document = SwaggerModule.createDocument(app, swaggerConfig);

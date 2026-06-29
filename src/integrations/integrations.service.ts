@@ -90,6 +90,41 @@ export class IntegrationsService {
   }
 
   /**
+   * Every connected account in a workspace, paired with the member who connected
+   * it, for a full workspace report ("who has connected what?"). Inactive
+   * accounts are included so health/connection issues can be surfaced. Returns
+   * only what's safe to show — account labels, never tokens or external ids.
+   */
+  async getWorkspaceIntegrations(workspaceId: string): Promise<
+    Array<{
+      userName: string | null;
+      appName: string;
+      appSlug: string;
+      label: string | null;
+      isActive: boolean;
+      accessLevel: IntegrationAccessLevel;
+    }>
+  > {
+    const rows = await this.integrationRepository
+      .createQueryBuilder('integration')
+      .leftJoinAndSelect('integration.user', 'user')
+      .where('integration.workspaceId = :workspaceId', { workspaceId })
+      .orderBy('user.name', 'ASC')
+      .addOrderBy('integration.appName', 'ASC')
+      .getMany();
+    return rows.map((row) => ({
+      userName: row.user?.name ?? null,
+      appName: row.appName,
+      appSlug: row.appSlug,
+      // The member-set nickname best matches the "label" column users expect;
+      // fall back to the Pipedream account name.
+      label: row.nickname ?? row.accountName ?? null,
+      isActive: row.isActive,
+      accessLevel: row.accessLevel,
+    }));
+  }
+
+  /**
    * Mint a single-use Pipedream Connect token under the scope the chosen access
    * level resolves to, so the account connects into the right bucket.
    */

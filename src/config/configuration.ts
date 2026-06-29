@@ -29,6 +29,7 @@ export interface AppConfig {
   slack: {
     clientId: string;
     clientSecret: string;
+    signingSecret: string;
     redirectUri: string;
     scopes: string;
   };
@@ -71,8 +72,11 @@ export const configuration = (): AppConfig => ({
   slack: {
     clientId: process.env.SLACK_CLIENT_ID ?? '',
     clientSecret: process.env.SLACK_CLIENT_SECRET ?? '',
+    signingSecret: process.env.SLACK_SIGNING_SECRET ?? '',
     redirectUri: process.env.SLACK_REDIRECT_URI ?? 'http://localhost:3000/auth/slack/callback',
-    scopes: process.env.SLACK_SCOPES ?? 'chat:write,users:read,users:read.email,team:read',
+    scopes:
+      process.env.SLACK_SCOPES ??
+      'app_mentions:read,chat:write,reactions:write,im:history,im:read,im:write,channels:history,groups:history,users:read,users:read.email,team:read',
   },
   pipedream: {
     clientId: process.env.PIPEDREAM_CLIENT_ID ?? '',
