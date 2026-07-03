@@ -39,6 +39,21 @@ export interface AppConfig {
     projectId: string;
     environment: string;
   };
+  meta: {
+    /** Meta's hosted Ads MCP endpoint (the OAuth-protected resource). */
+    mcpUrl: string;
+    /**
+     * OAuth client credentials for talking to Meta's MCP authorization server.
+     * Optional: when blank the service self-registers via Dynamic Client
+     * Registration and caches the result.
+     */
+    oauthClientId: string;
+    oauthClientSecret: string;
+    /** Where Meta bounces the browser back after consent. */
+    redirectUri: string;
+    /** Space-separated ad scopes to request. */
+    scopes: string;
+  };
   ai: {
     anthropicApiKey: string;
     model: string;
@@ -83,6 +98,14 @@ export const configuration = (): AppConfig => ({
     clientSecret: process.env.PIPEDREAM_CLIENT_SECRET ?? '',
     projectId: process.env.PIPEDREAM_PROJECT_ID ?? '',
     environment: process.env.PIPEDREAM_ENVIRONMENT ?? 'development',
+  },
+  meta: {
+    mcpUrl: process.env.META_MCP_URL ?? 'https://mcp.facebook.com/ads',
+    oauthClientId: process.env.META_OAUTH_CLIENT_ID ?? '',
+    oauthClientSecret: process.env.META_OAUTH_CLIENT_SECRET ?? '',
+    redirectUri:
+      process.env.META_REDIRECT_URI ?? 'http://localhost:3000/integrations/meta/callback',
+    scopes: process.env.META_SCOPES ?? 'ads_management ads_read business_management',
   },
   ai: {
     anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? '',

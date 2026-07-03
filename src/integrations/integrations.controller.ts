@@ -1,16 +1,28 @@
-import { Body, Controller, Delete, Get, Param, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Res } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { ApiTags } from '@nestjs/swagger';
 import { App, CreateTokenResponse } from '@pipedream/sdk';
-import { CurrentUser } from '../common/decorators';
+import { Response } from 'express';
+import { CurrentUser, Public } from '../common/decorators';
+import { AppConfig } from '../config/configuration';
 import { Integration } from '../database/entities';
-import { ConfirmConnectionDto, ConnectTokenDto } from './dto';
+import {
+  ConfirmConnectionDto,
+  ConnectTokenDto,
+  MetaAuthorizeDto,
+  MetaCallbackDto,
+  UpdateIntegrationDto,
+} from './dto';
 import { ConnectedIntegrationView, IntegrationsService } from './integrations.service';
 import { AppTool } from './pipedream.service';
 
 @ApiTags('integrations')
 @Controller('integrations')
 export class IntegrationsController {
-  constructor(private readonly integrationsService: IntegrationsService) {}
+  constructor(
+    private readonly integrationsService: IntegrationsService,
+    private readonly configService: ConfigService<AppConfig, true>,
+  ) {}
 
   /** List the integrations the current member may see (team + own private). */
   @Get()
@@ -57,6 +69,51 @@ export class IntegrationsController {
     @Body() dto: ConfirmConnectionDto,
   ): Promise<Integration> {
     return this.integrationsService.confirmConnection(workspaceId, userId, dto);
+  }
+
+  /**
+   * Start a native Meta Ads connect. Returns the Meta consent URL for the
+   * frontend to open; the browser comes back to {@link metaCallback}.
+   */
+  @Get('meta/authorize')
+  metaAuthorize(
+    @CurrentUser('workspaceId') workspaceId: string,
+    @CurrentUser('userId') userId: string,
+    @Query() dto: MetaAuthorizeDto,
+  ): Promise<{ url: string }> {
+    return this.integrationsService.startMetaConnect(workspaceId, userId, dto.accessLevel);
+  }
+
+  /**
+   * Meta redirects the browser here after consent. Public because Meta's
+   * redirect carries no JWT — identity travels in the `state` we stashed. On
+   * success we persist the connection and bounce back to the frontend.
+   */
+  @Public()
+  @Get('meta/callback')
+  async metaCallback(@Query() query: MetaCallbackDto, @Res() res: Response): Promise<void> {
+    const frontendUrl = this.configService.get('app.frontendUrl', { infer: true });
+    const redirect = new URL('/dashboard/integrations', frontendUrl);
+    try {
+      if (query.error || !query.code || !query.state) {
+        throw new Error(query.error ?? 'Missing code/state from Meta');
+      }
+      await this.integrationsService.completeMetaConnect(query.state, query.code);
+      redirect.searchParams.set('connected', 'meta');
+    } catch {
+      redirect.searchParams.set('error', 'meta');
+    }
+    res.redirect(redirect.toString());
+  }
+
+  /** Update a connected account's label, access level, or enabled state. */
+  @Patch(':id')
+  update(
+    @CurrentUser('workspaceId') workspaceId: string,
+    @Param('id') id: string,
+    @Body() dto: UpdateIntegrationDto,
+  ): Promise<ConnectedIntegrationView> {
+    return this.integrationsService.update(workspaceId, id, dto);
   }
 
   /** Disconnect an integration and revoke it at Pipedream. */

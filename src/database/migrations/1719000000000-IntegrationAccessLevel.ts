@@ -12,9 +12,7 @@ export class IntegrationAccessLevel1719000000000 implements MigrationInterface {
   name = 'IntegrationAccessLevel1719000000000';
 
   public async up(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.query(
-      `ALTER TABLE "integrations" ADD "nickname" character varying(255)`,
-    );
+    await queryRunner.query(`ALTER TABLE "integrations" ADD "nickname" character varying(255)`);
     await queryRunner.query(
       `ALTER TABLE "integrations" ADD "accessLevel" character varying(16) NOT NULL DEFAULT 'team'`,
     );

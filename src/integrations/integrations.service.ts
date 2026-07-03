@@ -1,14 +1,37 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { App, CreateTokenResponse } from '@pipedream/sdk';
+import Redis from 'ioredis';
 import { Brackets, Repository } from 'typeorm';
-import { Integration, IntegrationAccessLevel } from '../database/entities';
+import { REDIS_CLIENT } from '../common/constants';
+import { META_ADS_TOOLS } from '../ai/meta-ads-tools';
+import { Integration, IntegrationAccessLevel, IntegrationProvider } from '../database/entities';
 import { ConfirmConnectionDto } from './dto';
+import { MetaMcpServer, MetaMcpService } from './meta-mcp.service';
 import { AppTool, PipedreamService } from './pipedream.service';
+
+/** How long a pending Meta OAuth handshake (PKCE verifier + scope) lives. */
+const META_STATE_TTL_SECONDS = 600;
+/** Redis key prefix for pending Meta OAuth handshakes, keyed by `state`. */
+const META_STATE_PREFIX = 'meta:oauth:';
+
+/** The pending-connect context stashed in Redis between authorize and callback. */
+interface MetaOAuthState {
+  workspaceId: string;
+  userId: string;
+  accessLevel: IntegrationAccessLevel;
+  codeVerifier: string;
+}
+
+/** A Meta MCP server descriptor paired with its per-connection access token. */
+export interface MetaMcpServerWithToken extends MetaMcpServer {
+  authorizationToken: string;
+}
 
 /** A connected account, enriched with the member who connected it. */
 export interface ConnectedIntegrationView {
   id: string;
+  provider: IntegrationProvider;
   appName: string;
   appSlug: string;
   accountName: string | null;
@@ -36,6 +59,8 @@ export class IntegrationsService {
     @InjectRepository(Integration)
     private readonly integrationRepository: Repository<Integration>,
     private readonly pipedream: PipedreamService,
+    private readonly metaMcp: MetaMcpService,
+    @Inject(REDIS_CLIENT) private readonly redis: Redis,
   ) {}
 
   /**
@@ -75,6 +100,7 @@ export class IntegrationsService {
       .getMany();
     return rows.map((row) => ({
       id: row.id,
+      provider: row.provider,
       appName: row.appName,
       appSlug: row.appSlug,
       accountName: row.accountName,
@@ -145,7 +171,33 @@ export class IntegrationsService {
 
   /** List the actions/tools a given app exposes, for the "what can it do?" UI. */
   listAppTools(appSlug: string, after?: string): Promise<{ tools: AppTool[]; after?: string }> {
+    // Meta Ads is served by our own native tools (not Pipedream), so its
+    // capability list comes from the local tool definitions, not the catalogue.
+    if (appSlug === 'meta_ads') {
+      return Promise.resolve({ tools: this.metaAdsTools() });
+    }
     return this.pipedream.listAppTools(appSlug, after);
+  }
+
+  /** The native Meta Ads tools mapped to the UI's AppTool shape. */
+  private metaAdsTools(): AppTool[] {
+    return META_ADS_TOOLS.filter(
+      (tool): tool is Extract<typeof tool, { name: string }> => 'name' in tool,
+    ).map((tool) => ({
+      key: tool.name,
+      // "meta_ads_list_ad_accounts" -> "List ad accounts"
+      name: this.humanizeToolName(tool.name),
+      description: 'description' in tool ? tool.description : undefined,
+    }));
+  }
+
+  /** Turn a snake_case Meta tool name into a readable, sentence-case label. */
+  private humanizeToolName(name: string): string {
+    const words = name
+      .replace(/^meta_ads_/, '')
+      .replace(/_/g, ' ')
+      .trim();
+    return words.charAt(0).toUpperCase() + words.slice(1);
   }
 
   /**
@@ -191,8 +243,55 @@ export class IntegrationsService {
   }
 
   /**
-   * Disconnect an integration: revoke the account at Pipedream and remove the
-   * row. Scoped to the workspace so members can't disconnect other tenants.
+   * Apply a partial update from the configure screen (label, access level, or
+   * enabled state) and return the refreshed view. Scoped to the workspace so a
+   * member can't edit another tenant's account.
+   *
+   * Note: for Pipedream accounts, `accessLevel` here only changes visibility in
+   * our queries — the account still lives under the Pipedream scope it was
+   * connected with, so moving team↔private may require a reconnect for AI runs
+   * to route to it. Meta accounts carry their own token, so the change is exact.
+   */
+  async update(
+    workspaceId: string,
+    integrationId: string,
+    patch: { nickname?: string; accessLevel?: IntegrationAccessLevel; isActive?: boolean },
+  ): Promise<ConnectedIntegrationView> {
+    const integration = await this.integrationRepository.findOne({
+      where: { id: integrationId, workspaceId },
+      relations: { user: true },
+    });
+    if (!integration) {
+      throw new NotFoundException('Integration not found');
+    }
+
+    if (patch.nickname !== undefined) integration.nickname = patch.nickname.trim() || null;
+    if (patch.accessLevel !== undefined) integration.accessLevel = patch.accessLevel;
+    if (patch.isActive !== undefined) integration.isActive = patch.isActive;
+
+    const saved = await this.integrationRepository.save(integration);
+    return {
+      id: saved.id,
+      provider: saved.provider,
+      appName: saved.appName,
+      appSlug: saved.appSlug,
+      accountName: saved.accountName,
+      nickname: saved.nickname,
+      accessLevel: saved.accessLevel,
+      iconUrl: saved.iconUrl,
+      externalAccountId: saved.externalAccountId,
+      isActive: saved.isActive,
+      connectedAt: saved.connectedAt,
+      userId: saved.userId,
+      userName: integration.user?.name ?? null,
+    };
+  }
+
+  /**
+   * Disconnect an integration and remove the row. Pipedream connections are
+   * also revoked at Pipedream; `meta` connections just drop the stored token
+   * (there's no Pipedream account to revoke). Scoped to the workspace so members
+   * can't disconnect other tenants.
    */
   async disconnect(workspaceId: string, integrationId: string): Promise<{ success: boolean }> {
     const integration = await this.integrationRepository.findOne({
@@ -202,7 +301,7 @@ export class IntegrationsService {
       throw new NotFoundException('Integration not found');
     }
 
-    if (integration.externalAccountId) {
+    if (integration.provider === 'pipedream' && integration.externalAccountId) {
       try {
         await this.pipedream.deleteAccount(integration.externalAccountId);
       } catch (error) {
@@ -218,5 +317,163 @@ export class IntegrationsService {
 
     await this.integrationRepository.remove(integration);
     return { success: true };
+  }
+
+  // ── Meta Ads (native, non-Pipedream) ──────────────────────────────────────
+
+  /**
+   * Begin a Meta Ads connect: generate PKCE + `state`, stash the pending
+   * handshake (who's connecting, at what access level, the PKCE verifier) in
+   * Redis under `state`, and return the Meta consent URL for the browser. The
+   * state carries identity through the OAuth round-trip, so the callback can be
+   * public (Meta's redirect won't carry our JWT).
+   */
+  async startMetaConnect(
+    workspaceId: string,
+    userId: string,
+    accessLevel: IntegrationAccessLevel = 'team',
+  ): Promise<{ url: string }> {
+    const { verifier, challenge } = MetaMcpService.generatePkce();
+    const state = MetaMcpService.generateState();
+    const payload: MetaOAuthState = { workspaceId, userId, accessLevel, codeVerifier: verifier };
+    await this.redis.set(
+      `${META_STATE_PREFIX}${state}`,
+      JSON.stringify(payload),
+      'EX',
+      META_STATE_TTL_SECONDS,
+    );
+    const url = await this.metaMcp.buildAuthorizationUrl(state, challenge);
+    return { url };
+  }
+
+  /**
+   * Complete a Meta Ads connect: validate and consume the pending `state`,
+   * exchange the code for tokens, and upsert the integration row (idempotent on
+   * the (workspaceId, externalAccountId) index, so re-connecting refreshes it).
+   */
+  async completeMetaConnect(state: string, code: string): Promise<Integration> {
+    const key = `${META_STATE_PREFIX}${state}`;
+    const raw = await this.redis.get(key);
+    if (!raw) {
+      throw new NotFoundException('Meta connect session expired or invalid');
+    }
+    await this.redis.del(key);
+    const { workspaceId, userId, accessLevel, codeVerifier } = JSON.parse(raw) as MetaOAuthState;
+
+    const connection = await this.metaMcp.exchangeCode(code, codeVerifier);
+
+    const existing = await this.integrationRepository.findOne({
+      where: { workspaceId, externalAccountId: connection.accountId },
+    });
+    const integration =
+      existing ??
+      this.integrationRepository.create({
+        workspaceId,
+        userId,
+        externalAccountId: connection.accountId,
+      });
+
+    integration.userId = existing?.userId ?? userId;
+    integration.provider = 'meta';
+    integration.appSlug = connection.appSlug;
+    integration.appName = connection.appName;
+    integration.accountName = connection.accountName;
+    integration.accessLevel = accessLevel;
+    integration.iconUrl = connection.iconUrl;
+    integration.isActive = true;
+    integration.accessToken = connection.accessToken;
+    integration.refreshToken = connection.refreshToken;
+    integration.tokenExpiresAt = connection.expiresAt;
+    integration.scopes = connection.scopes;
+
+    return this.integrationRepository.save(integration);
+  }
+
+  /**
+   * Build the Meta MCP servers a member may use — every team Meta account plus
+   * their own private ones — each paired with a valid access token (refreshed
+   * and persisted here when stale). Used by the AI run to expose Meta as an MCP
+   * toolset alongside the Pipedream servers.
+   */
+  async buildMetaMcpServers(
+    workspaceId: string,
+    userId: string,
+  ): Promise<MetaMcpServerWithToken[]> {
+    const rows = await this.visibleMetaIntegrations(workspaceId, userId);
+    const servers: MetaMcpServerWithToken[] = [];
+    for (const row of rows) {
+      const token = await this.ensureFreshMetaToken(row);
+      if (!token) continue;
+      servers.push({ ...this.metaMcp.buildMcpServer(row.id), authorizationToken: token });
+    }
+    return servers;
+  }
+
+  /**
+   * The Meta accounts a member may use: every team Meta account plus their own
+   * private ones, active only. Shared by the MCP-server build and the native
+   * Meta Ads token resolver.
+   */
+  private visibleMetaIntegrations(workspaceId: string, userId: string): Promise<Integration[]> {
+    return this.integrationRepository
+      .createQueryBuilder('integration')
+      .where('integration.workspaceId = :workspaceId', { workspaceId })
+      .andWhere('integration.provider = :provider', { provider: 'meta' })
+      .andWhere('integration.isActive = true')
+      .andWhere(
+        new Brackets((qb) => {
+          qb.where('integration.accessLevel = :team', { team: 'team' }).orWhere(
+            'integration.userId = :userId',
+            { userId },
+          );
+        }),
+      )
+      .getMany();
+  }
+
+  /**
+   * Resolve a valid Meta access token for the member's run — the freshest token
+   * of the first visible active Meta account. Used by the native Meta Ads tools,
+   * which call the Marketing API directly (Meta's hosted MCP is allowlist-gated
+   * and rejects our token). Returns null when there's no usable Meta connection.
+   */
+  async getMetaAccessToken(workspaceId: string, userId: string): Promise<string | null> {
+    const rows = await this.visibleMetaIntegrations(workspaceId, userId);
+    for (const row of rows) {
+      const token = await this.ensureFreshMetaToken(row);
+      if (token) return token;
+    }
+    return null;
+  }
+
+  /**
+   * Return a valid access token for a Meta connection, refreshing and persisting
+   * it when expired. Returns null (and deactivates the row) if the connection
+   * can no longer be refreshed, so a dead account drops out of AI runs.
+   */
+  private async ensureFreshMetaToken(integration: Integration): Promise<string | null> {
+    if (integration.accessToken && !this.metaMcp.isExpired(integration.tokenExpiresAt)) {
+      return integration.accessToken;
+    }
+    if (!integration.refreshToken) return integration.accessToken;
+
+    try {
+      const refreshed = await this.metaMcp.refreshAccessToken(integration.refreshToken);
+      integration.accessToken = refreshed.accessToken;
+      integration.refreshToken = refreshed.refreshToken ?? integration.refreshToken;
+      integration.tokenExpiresAt = refreshed.expiresAt;
+      if (refreshed.scopes) integration.scopes = refreshed.scopes;
+      await this.integrationRepository.save(integration);
+      return integration.accessToken;
+    } catch (error) {
+      this.logger.warn(
+        `Failed to refresh Meta token for integration ${integration.id}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      integration.isActive = false;
+      await this.integrationRepository.save(integration);
+      return null;
+    }
   }
 }

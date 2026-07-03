@@ -24,12 +24,8 @@ export class CreateSpaces1721000000000 implements MigrationInterface {
         CONSTRAINT "PK_spaces" PRIMARY KEY ("id")
       )
     `);
-    await queryRunner.query(
-      `CREATE UNIQUE INDEX "UQ_spaces_slug" ON "spaces" ("slug")`,
-    );
-    await queryRunner.query(
-      `CREATE INDEX "IDX_spaces_workspaceId" ON "spaces" ("workspaceId")`,
-    );
+    await queryRunner.query(`CREATE UNIQUE INDEX "UQ_spaces_slug" ON "spaces" ("slug")`);
+    await queryRunner.query(`CREATE INDEX "IDX_spaces_workspaceId" ON "spaces" ("workspaceId")`);
     await queryRunner.query(
       `CREATE INDEX "IDX_spaces_createdByUserId" ON "spaces" ("createdByUserId")`,
     );
@@ -56,9 +52,7 @@ export class CreateSpaces1721000000000 implements MigrationInterface {
     await queryRunner.query(
       `CREATE UNIQUE INDEX "UQ_space_users_space_email" ON "space_users" ("spaceId", "email")`,
     );
-    await queryRunner.query(
-      `CREATE INDEX "IDX_space_users_spaceId" ON "space_users" ("spaceId")`,
-    );
+    await queryRunner.query(`CREATE INDEX "IDX_space_users_spaceId" ON "space_users" ("spaceId")`);
     await queryRunner.query(`
       ALTER TABLE "space_users"
         ADD CONSTRAINT "FK_space_users_space" FOREIGN KEY ("spaceId")

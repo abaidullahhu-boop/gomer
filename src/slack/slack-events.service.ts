@@ -2,7 +2,13 @@ import { Injectable, Logger } from '@nestjs/common';
 import { AiService } from '../ai/ai.service';
 import { UsersService } from '../users/users.service';
 import { WorkspacesService } from '../workspaces/workspaces.service';
-import { SlackEventEnvelope, SlackMessageEvent } from './interfaces/slack-event.interface';
+import {
+  SlackEventEnvelope,
+  SlackMessageEvent,
+  SlackTeamJoinEvent,
+} from './interfaces/slack-event.interface';
+import { buildApprovalBlocks, buildWelcomeMessage } from './slack-messages';
+import { SlackInteractionsService } from './slack-interactions.service';
 import { SlackService } from './slack.service';
 
 /**
@@ -31,21 +37,32 @@ export class SlackEventsService {
     private readonly workspacesService: WorkspacesService,
     private readonly usersService: UsersService,
     private readonly aiService: AiService,
+    private readonly interactions: SlackInteractionsService,
   ) {}
 
   /** Handle an `event_callback` envelope. Safe to call without awaiting. */
   async handleEventCallback(envelope: SlackEventEnvelope): Promise<void> {
     const event = envelope.event;
-    if (!event || !this.isHandledMessage(event)) return;
+    if (!event) return;
 
+    // Drop duplicate deliveries/retries early, before any handler runs.
     if (envelope.event_id) {
       if (this.seenEventIds.has(envelope.event_id)) return;
       this.rememberEventId(envelope.event_id);
     }
 
+    // A new member joining gets a proactive onboarding DM, not a prompt run.
+    if (event.type === 'team_join') {
+      await this.handleTeamJoin(envelope.team_id, event as SlackTeamJoinEvent);
+      return;
+    }
+
+    const message = event as SlackMessageEvent;
+    if (!this.isHandledMessage(message)) return;
+
     const teamId = envelope.team_id;
-    const channel = event.channel;
-    const prompt = this.cleanText(event.text ?? '');
+    const channel = message.channel;
+    const prompt = this.cleanText(message.text ?? '');
     if (!teamId || !channel || !prompt) return;
 
     const workspace = await this.workspacesService.findBySlackTeamId(teamId);
@@ -55,8 +72,8 @@ export class SlackEventsService {
     }
     const botToken = workspace.slackBotToken;
     // Reply in the same thread for mentions; DMs have no parent to thread under.
-    const threadTs = event.thread_ts ?? event.ts;
-    const messageTs = event.ts;
+    const threadTs = message.thread_ts ?? message.ts;
+    const messageTs = message.ts;
 
     // Signal "processing" by reacting to the user's own message rather than
     // posting a placeholder reply; the reaction is cleared once we answer.
@@ -65,19 +82,52 @@ export class SlackEventsService {
     }
 
     try {
-      const member = event.user
-        ? await this.usersService.findBySlackIdentity(workspace.id, event.user)
+      const member = message.user
+        ? await this.usersService.findBySlackIdentity(workspace.id, message.user)
         : null;
 
       const result = await this.aiService.run(workspace.id, member?.id ?? null, prompt, {
         sourceName: 'slack',
+        // Slack can approve gated writes with interactive buttons, so defer them
+        // out of band rather than using the soft `confirmed` flag.
+        confirmVia: 'buttons',
         // Resolved lazily — only the workspace-stats tool needs it, so we avoid
         // a users.list call on every ordinary message.
         fetchMemberCount: () => this.slackService.countMembers(botToken),
       });
 
       const answer = result.answer || "I couldn't come up with a response to that.";
-      await this.slackService.postMessage(botToken, channel, answer, threadTs);
+
+      // A gated write is pending: post Gomer's description with Approve/Cancel
+      // buttons and stash the action for the interaction callback. Requires a
+      // known requester (to gate who can approve); otherwise fall back to text.
+      if (result.pendingAction && message.user) {
+        const token = await this.interactions.storePending({
+          workspaceId: workspace.id,
+          requesterUserId: member?.id ?? null,
+          requesterSlackId: message.user,
+          requesterName: member?.name ?? 'the requester',
+          teamId,
+          channel,
+          threadTs,
+          messageTs: '',
+          toolName: result.pendingAction.tool,
+          input: result.pendingAction.input,
+          label: result.pendingAction.label,
+          answer,
+        });
+        const ts = await this.slackService.postMessage(
+          botToken,
+          channel,
+          answer,
+          threadTs,
+          buildApprovalBlocks(answer, token, result.pendingAction.label),
+        );
+        // Record the posted message ts so the callback can edit it in place.
+        if (ts) await this.interactions.attachMessageTs(token, ts);
+      } else {
+        await this.slackService.postMessage(botToken, channel, answer, threadTs);
+      }
     } catch (error) {
       this.logger.error(
         `Failed to handle Slack message: ${error instanceof Error ? error.message : String(error)}`,
@@ -94,6 +144,36 @@ export class SlackEventsService {
         await this.slackService.removeReaction(botToken, channel, messageTs, PROCESSING_REACTION);
       }
     }
+  }
+
+  /**
+   * Greet a newly joined member with an onboarding DM — Gomer "messaging first".
+   * Best-effort: bots/deactivated joiners and workspaces we can't resolve are
+   * skipped silently.
+   */
+  private async handleTeamJoin(
+    teamId: string | undefined,
+    event: SlackTeamJoinEvent,
+  ): Promise<void> {
+    const slackUser = event.user;
+    if (!slackUser?.id || slackUser.is_bot || slackUser.deleted) return;
+
+    const resolvedTeamId = teamId ?? slackUser.team_id;
+    if (!resolvedTeamId) return;
+
+    const workspace = await this.workspacesService.findBySlackTeamId(resolvedTeamId);
+    if (!workspace?.slackBotToken) {
+      this.logger.warn(`No workspace/bot token for Slack team ${resolvedTeamId} on team_join`);
+      return;
+    }
+
+    const name =
+      slackUser.profile?.display_name || slackUser.profile?.real_name || slackUser.name || null;
+    await this.slackService.deliver(
+      workspace.slackBotToken,
+      slackUser.id,
+      buildWelcomeMessage(name),
+    );
   }
 
   /** We act on app_mentions and direct messages, never on bot-authored posts. */

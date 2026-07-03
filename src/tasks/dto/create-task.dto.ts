@@ -22,6 +22,15 @@ export class CreateTaskDto {
   @MaxLength(64)
   timezone?: string;
 
+  /**
+   * Slack destination the task posts its output to: a channel/group id, or a
+   * user id (DM). Omit to run the task silently (no message posted).
+   */
+  @IsOptional()
+  @IsString()
+  @MaxLength(64)
+  slackChannelId?: string;
+
   @IsOptional()
   @IsString()
   description?: string;

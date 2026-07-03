@@ -60,12 +60,18 @@ export class SlackService {
     channel: string,
     text: string,
     threadTs?: string,
+    blocks?: unknown[],
   ): Promise<string | null> {
     try {
       const response = await firstValueFrom(
         this.httpService.post<{ ok: boolean; ts?: string; error?: string }>(
           `${SLACK_API_BASE_URL}/chat.postMessage`,
-          { channel, text, ...(threadTs ? { thread_ts: threadTs } : {}) },
+          {
+            channel,
+            text,
+            ...(threadTs ? { thread_ts: threadTs } : {}),
+            ...(blocks ? { blocks } : {}),
+          },
           {
             headers: {
               Authorization: `Bearer ${botToken}`,
@@ -97,12 +103,13 @@ export class SlackService {
     channel: string,
     ts: string,
     text: string,
+    blocks?: unknown[],
   ): Promise<boolean> {
     try {
       const response = await firstValueFrom(
         this.httpService.post<{ ok: boolean; error?: string }>(
           `${SLACK_API_BASE_URL}/chat.update`,
-          { channel, ts, text },
+          { channel, ts, text, ...(blocks ? { blocks } : {}) },
           {
             headers: {
               Authorization: `Bearer ${botToken}`,
@@ -124,12 +131,84 @@ export class SlackService {
   }
 
   /**
+   * Reply to a Slack interaction privately via its `response_url` — an ephemeral
+   * note only the clicking user sees (e.g. "only the requester can approve").
+   * The response_url is pre-authorized, so no bot token is needed. Best-effort.
+   */
+  async respondEphemeral(responseUrl: string, text: string): Promise<void> {
+    try {
+      await firstValueFrom(
+        this.httpService.post(responseUrl, {
+          response_type: 'ephemeral',
+          replace_original: false,
+          text,
+        }),
+      );
+    } catch (error) {
+      this.logger.warn(
+        `response_url post error: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  /**
+   * Open (or fetch) the IM channel with a user so the bot can DM them
+   * (conversations.open). Needs the `im:write` scope. Best-effort: logs and
+   * returns the channel id, or null on failure.
+   */
+  async openDm(botToken: string, userId: string): Promise<string | null> {
+    try {
+      const response = await firstValueFrom(
+        this.httpService.post<{ ok: boolean; error?: string; channel?: { id?: string } }>(
+          `${SLACK_API_BASE_URL}/conversations.open`,
+          { users: userId },
+          {
+            headers: {
+              Authorization: `Bearer ${botToken}`,
+              'Content-Type': 'application/json; charset=utf-8',
+            },
+          },
+        ),
+      );
+      if (!response.data.ok || !response.data.channel?.id) {
+        this.logger.warn(`conversations.open failed: ${response.data.error ?? 'unknown_error'}`);
+        return null;
+      }
+      return response.data.channel.id;
+    } catch (error) {
+      this.logger.warn(
+        `conversations.open error: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Deliver a message to a destination that may be a channel/group id or a user
+   * id (Slack user ids start with U or W) — opening a DM first in the latter
+   * case. Used for proactive posts (scheduled tasks, onboarding). Best-effort:
+   * returns the new message timestamp or null.
+   */
+  async deliver(botToken: string, destination: string, text: string): Promise<string | null> {
+    const channel = /^[UW]/.test(destination)
+      ? await this.openDm(botToken, destination)
+      : destination;
+    if (!channel) return null;
+    return this.postMessage(botToken, channel, text);
+  }
+
+  /**
    * Add an emoji reaction to a message (reactions.add) — used as a lightweight
    * "processing" indicator on the user's own message instead of a placeholder
    * reply. `name` is the bare emoji name (no colons). Best-effort: logs and
    * returns false on failure (e.g. `already_reacted`, missing reactions:write).
    */
-  addReaction(botToken: string, channel: string, timestamp: string, name: string): Promise<boolean> {
+  addReaction(
+    botToken: string,
+    channel: string,
+    timestamp: string,
+    name: string,
+  ): Promise<boolean> {
     return this.react('reactions.add', botToken, channel, timestamp, name);
   }
 
@@ -164,7 +243,10 @@ export class SlackService {
         ),
       );
       // `already_reacted` / `no_reaction` are benign races, not real failures.
-      if (!response.data.ok && !['already_reacted', 'no_reaction'].includes(response.data.error ?? '')) {
+      if (
+        !response.data.ok &&
+        !['already_reacted', 'no_reaction'].includes(response.data.error ?? '')
+      ) {
         this.logger.warn(`${method} failed: ${response.data.error ?? 'unknown_error'}`);
       }
       return response.data.ok;

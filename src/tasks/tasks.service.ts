@@ -11,7 +11,26 @@ import { Repository } from 'typeorm';
 import { AiService } from '../ai/ai.service';
 import { TaskType } from '../common/enums';
 import { ScheduledTask } from '../database/entities';
+import { SlackService } from '../slack/slack.service';
+import { WorkspacesService } from '../workspaces/workspaces.service';
 import { CreateTaskDto, UpdateTaskDto } from './dto';
+
+/** Name of the per-workspace SYSTEM task that drives proactive check-ins. */
+const SYSTEM_CHECK_IN_NAME = 'Daily workspace check-in';
+
+/** Cron for the seeded check-in: 9am daily, in the task's (server-local) tz. */
+const SYSTEM_CHECK_IN_CRON = '0 9 * * *';
+
+/** Prompt the seeded check-in runs — a short, proactive "how can I help?". */
+const SYSTEM_CHECK_IN_PROMPT = [
+  'You are doing a brief daily workspace check-in, posted proactively in Slack.',
+  'Review what you know about this workspace and the apps members have connected,',
+  'then suggest 2-3 specific, concrete ways you could help right now (a report,',
+  'an automation, research, or a draft tailored to this team). Lead with one strong',
+  'idea, keep it short and friendly, and end by inviting them to just reply with',
+  "what they need. If there's genuinely nothing useful to suggest, say a brief",
+  'hello and offer to help rather than inventing busywork.',
+].join(' ');
 
 /** A scheduled task shaped for the dashboard, with author resolved. */
 export interface TaskView {
@@ -21,6 +40,7 @@ export interface TaskView {
   cronExpression: string;
   timezone: string | null;
   prompt: string;
+  slackChannelId: string | null;
   isActive: boolean;
   isSystem: boolean;
   model: string | null;
@@ -45,6 +65,8 @@ export class TasksService {
     @InjectRepository(ScheduledTask)
     private readonly taskRepository: Repository<ScheduledTask>,
     private readonly aiService: AiService,
+    private readonly slackService: SlackService,
+    private readonly workspacesService: WorkspacesService,
   ) {}
 
   async findAllForWorkspace(workspaceId: string, currentUserId: string): Promise<TaskView[]> {
@@ -65,6 +87,7 @@ export class TasksService {
       prompt: dto.prompt,
       cronExpression: dto.cronExpression,
       timezone,
+      slackChannelId: dto.slackChannelId ?? null,
       description: dto.description ?? null,
       model: dto.model ?? null,
       oneTime: dto.oneTime ?? false,
@@ -91,6 +114,7 @@ export class TasksService {
     if (dto.model !== undefined) task.model = dto.model || null;
     if (dto.oneTime !== undefined) task.oneTime = dto.oneTime;
     if (dto.isActive !== undefined) task.isActive = dto.isActive;
+    if (dto.slackChannelId !== undefined) task.slackChannelId = dto.slackChannelId || null;
     if (dto.timezone !== undefined) task.timezone = dto.timezone || null;
     if (dto.cronExpression !== undefined) task.cronExpression = dto.cronExpression;
     // Recompute the next fire time whenever the schedule or its timezone moves.
@@ -136,15 +160,16 @@ export class TasksService {
     }
   }
 
-  /** Run one task's prompt and advance its schedule. */
+  /** Run one task's prompt, deliver its answer to Slack, and advance its schedule. */
   private async executeTask(task: ScheduledTask): Promise<void> {
     this.logger.log(`Running task ${task.id} (${task.name})`);
     try {
-      await this.aiService.run(task.workspaceId, task.createdByUserId, task.prompt, {
+      const result = await this.aiService.run(task.workspaceId, task.createdByUserId, task.prompt, {
         model: task.model,
         taskId: task.id,
         sourceName: `task:${task.name}`,
       });
+      await this.deliver(task, result.answer);
     } finally {
       task.lastRun = new Date();
       if (task.oneTime) {
@@ -155,6 +180,61 @@ export class TasksService {
       }
       await this.taskRepository.save(task);
     }
+  }
+
+  /**
+   * Post a task's answer to its configured Slack destination. Best-effort: a
+   * task with no destination (or an empty answer) simply runs silently, and a
+   * missing bot token is logged rather than thrown so the schedule still advances.
+   */
+  private async deliver(task: ScheduledTask, answer: string): Promise<void> {
+    const text = answer?.trim();
+    if (!task.slackChannelId || !text) return;
+
+    const workspace = await this.workspacesService.findById(task.workspaceId);
+    if (!workspace?.slackBotToken) {
+      this.logger.warn(`Task ${task.id} (${task.name}) has no Slack bot token to deliver with`);
+      return;
+    }
+    await this.slackService.deliver(workspace.slackBotToken, task.slackChannelId, text);
+  }
+
+  /**
+   * Seed the per-workspace SYSTEM check-in task that drives proactive outreach,
+   * delivering to the given destination (typically the installer's DM). Idempotent
+   * — does nothing if the workspace already has one. Returns true only when it
+   * created the task, so the caller can treat that as "first install".
+   */
+  async ensureSystemCheckIn(workspaceId: string, slackChannelId: string | null): Promise<boolean> {
+    const existing = await this.taskRepository.findOne({
+      where: { workspaceId, type: TaskType.SYSTEM, name: SYSTEM_CHECK_IN_NAME },
+    });
+    if (existing) {
+      // Backfill the destination if an earlier seed had none.
+      if (!existing.slackChannelId && slackChannelId) {
+        existing.slackChannelId = slackChannelId;
+        await this.taskRepository.save(existing);
+      }
+      return false;
+    }
+
+    const task = this.taskRepository.create({
+      workspaceId,
+      name: SYSTEM_CHECK_IN_NAME,
+      description: 'Gomer reviews the workspace and proposes ways it can help.',
+      prompt: SYSTEM_CHECK_IN_PROMPT,
+      cronExpression: SYSTEM_CHECK_IN_CRON,
+      timezone: null,
+      slackChannelId,
+      type: TaskType.SYSTEM,
+      model: null,
+      oneTime: false,
+      createdByUserId: null,
+      isActive: true,
+      nextRun: this.nextRunFrom(SYSTEM_CHECK_IN_CRON, null),
+    });
+    await this.taskRepository.save(task);
+    return true;
   }
 
   private async findOwned(workspaceId: string, id: string): Promise<ScheduledTask> {
@@ -203,6 +283,7 @@ export class TasksService {
       cronExpression: task.cronExpression,
       timezone: task.timezone,
       prompt: task.prompt,
+      slackChannelId: task.slackChannelId,
       isActive: task.isActive,
       isSystem: task.type === TaskType.SYSTEM,
       model: task.model,

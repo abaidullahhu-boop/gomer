@@ -5,6 +5,7 @@ import { PassportModule } from '@nestjs/passport';
 import { JWT_STRATEGY } from '../common/constants';
 import { AppConfig } from '../config/configuration';
 import { SlackModule } from '../slack/slack.module';
+import { TasksModule } from '../tasks/tasks.module';
 import { UsersModule } from '../users/users.module';
 import { WorkspacesModule } from '../workspaces/workspaces.module';
 import { AuthController } from './auth.controller';
@@ -28,6 +29,7 @@ import { JwtStrategy } from './strategies';
     UsersModule,
     WorkspacesModule,
     SlackModule,
+    TasksModule,
   ],
   controllers: [AuthController],
   providers: [AuthService, JwtStrategy],

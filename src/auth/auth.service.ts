@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -11,7 +12,9 @@ import { UserRole } from '../common/enums';
 import { JwtPayload } from '../common/interfaces';
 import { AppConfig } from '../config/configuration';
 import { User, Workspace } from '../database/entities';
+import { buildWelcomeMessage } from '../slack/slack-messages';
 import { SlackService } from '../slack/slack.service';
+import { TasksService } from '../tasks/tasks.service';
 import { UsersService } from '../users/users.service';
 import { WorkspacesService } from '../workspaces/workspaces.service';
 
@@ -38,12 +41,15 @@ const REFRESH_TOKEN_SALT_ROUNDS = 10;
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService<AppConfig, true>,
     private readonly usersService: UsersService,
     private readonly workspacesService: WorkspacesService,
     private readonly slackService: SlackService,
+    private readonly tasksService: TasksService,
   ) {}
 
   /** Returns the Slack "Add to Slack" install URL. */
@@ -72,9 +78,43 @@ export class AuthService {
       avatarUrl: identity.avatarUrl,
     });
 
+    await this.onboardWorkspace(workspace, identity.slackUserId, identity.name);
+
     const tokens = await this.issueTokens(user);
 
     return { ...tokens, user, workspace };
+  }
+
+  /**
+   * On first install, seed the workspace's proactive daily check-in (delivered to
+   * the installer's DM) and welcome the installer. Idempotent — re-running the
+   * OAuth flow on an already-onboarded workspace does nothing, so logging in again
+   * never re-greets. Best-effort: failures here never break the install.
+   */
+  private async onboardWorkspace(
+    workspace: Workspace,
+    installerSlackUserId: string,
+    installerName: string,
+  ): Promise<void> {
+    try {
+      const seeded = await this.tasksService.ensureSystemCheckIn(
+        workspace.id,
+        installerSlackUserId,
+      );
+      if (seeded && workspace.slackBotToken) {
+        await this.slackService.deliver(
+          workspace.slackBotToken,
+          installerSlackUserId,
+          buildWelcomeMessage(installerName, { isInstaller: true }),
+        );
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Workspace onboarding failed for ${workspace.id}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
 
   /** Validates a refresh token, rotates it, and returns a new token pair. */

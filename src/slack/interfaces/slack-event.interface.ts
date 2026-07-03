@@ -18,6 +18,29 @@ export interface SlackMessageEvent {
   thread_ts?: string;
 }
 
+/** The slice of a Slack user object we read from a `team_join` event. */
+export interface SlackUserObject {
+  id: string;
+  team_id?: string;
+  name?: string;
+  deleted?: boolean;
+  is_bot?: boolean;
+  profile?: {
+    real_name?: string;
+    display_name?: string;
+    email?: string;
+  };
+}
+
+/** Fired when a new member joins the workspace — drives the onboarding DM. */
+export interface SlackTeamJoinEvent {
+  type: 'team_join';
+  user: SlackUserObject;
+}
+
+/** Any event we type; the handler narrows on `type` before reading fields. */
+export type SlackEvent = SlackMessageEvent | SlackTeamJoinEvent;
+
 /** The outer envelope Slack POSTs to the events endpoint. */
 export interface SlackEventEnvelope {
   type: 'url_verification' | 'event_callback' | string;
@@ -25,5 +48,5 @@ export interface SlackEventEnvelope {
   challenge?: string;
   team_id?: string;
   event_id?: string;
-  event?: SlackMessageEvent;
+  event?: SlackEvent;
 }

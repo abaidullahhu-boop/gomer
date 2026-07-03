@@ -4,10 +4,33 @@ import Anthropic from '@anthropic-ai/sdk';
 import { AppConfig } from '../config/configuration';
 import { CreditEventType } from '../common/enums';
 import { IntegrationsService } from '../integrations/integrations.service';
+import { MetaAdsService } from '../integrations/meta-ads.service';
 import { PipedreamService } from '../integrations/pipedream.service';
 import { SpacesService } from '../spaces/spaces.service';
 import { UsageService } from '../usage/usage.service';
 import { UsersService } from '../users/users.service';
+import {
+  META_ADS_CREATE_AD,
+  META_ADS_CREATE_AD_CREATIVE,
+  META_ADS_CREATE_AD_SET,
+  META_ADS_CREATE_CAMPAIGN,
+  META_ADS_DELETE_AD,
+  META_ADS_DELETE_AD_SET,
+  META_ADS_DELETE_CAMPAIGN,
+  META_ADS_GET_INSIGHTS,
+  META_ADS_LIST_AD_ACCOUNTS,
+  META_ADS_LIST_AD_SETS,
+  META_ADS_LIST_ADS,
+  META_ADS_LIST_CAMPAIGNS,
+  META_ADS_LIST_PAGES,
+  META_ADS_SEARCH_INTERESTS,
+  META_ADS_TOOL_NAMES,
+  META_ADS_TOOLS,
+  META_ADS_UPDATE_AD,
+  META_ADS_UPDATE_AD_SET,
+  META_ADS_UPDATE_CAMPAIGN,
+  META_ADS_WRITE_TOOL_NAMES,
+} from './meta-ads-tools';
 import { SPACE_TOOLS } from './space-tools';
 import { GET_WORKSPACE_STATS, WORKSPACE_TOOLS } from './workspace-tools';
 
@@ -21,11 +44,13 @@ const MCP_BETA = 'mcp-client-2025-11-20';
  */
 const LOCAL_TOOLS: Anthropic.Beta.BetaToolUnion[] = [...SPACE_TOOLS, ...WORKSPACE_TOOLS];
 
-const SYSTEM_PROMPT = `You are Gomer, an AI assistant for a workspace. You can take actions across the user's connected apps using the available tools. Prefer acting over describing: when a request maps to a tool, use it. When you lack a connected app needed for a request, say so plainly and name the app to connect.
+const SYSTEM_PROMPT = `You are Gomer, an AI assistant for a workspace. You can take actions across the user's connected apps using the available tools. Prefer acting over describing: when a request maps to a tool, use it. When you lack a connected app needed for a request, say so plainly and name the app to connect. Before any action that creates, edits, deletes, or starts spending on a connected app — especially Meta Ads campaigns (creating, activating, changing budgets, or deleting) — state exactly what you will do and get the user's explicit confirmation first; never perform such actions speculatively.
 
 You can also build "Spaces" — full web apps with their own database, passwordless (magic-link) login, and hosting — using the create_space tool. Spaces suit CRUD/form/dashboard internal tools (e.g. a time logger, lead tracker, or content calendar). Describe the app as entities (data types with typed fields) and views (forms, tables, dashboards). Never invent or share end-user passwords; logins are always magic links. After building a Space, give the user its link.
 
 You can also answer questions about this workspace itself — how many members it has and which apps members have connected — with the get_workspace_stats tool. Use it instead of guessing or saying you have no way to know.
+
+When the user asks what you can do — overall or about a specific connected app — give a structured, scannable answer rather than a one-liner: confirm which relevant app(s) are connected, name the specific account when a quick read-only tool call can tell you (e.g. list Meta ad accounts to name the account and currency), group the concrete capabilities into a few labelled sections, and finish with 2–3 example prompts the user could send. This capability-overview case is the one exception to the brevity rule below.
 
 Your replies are delivered in Slack, so format for Slack's mrkdwn — not Markdown: use *single asterisks* for bold (never **double**, which Slack shows literally), _underscores_ for italics, and a leading "• " for bullets. Don't use # headings or [text](url) links; write links as <https://example.com|label>.
 
@@ -45,6 +70,20 @@ export interface AiSpace {
   url: string;
 }
 
+/**
+ * A write action the model wants to take that is gated behind explicit user
+ * approval. In interactive (Slack button) mode the run stops when one is
+ * proposed, returns it here, and the surface renders Approve/Cancel buttons —
+ * the action is executed later via {@link AiService.executeMetaAdsAction}.
+ */
+export interface AiPendingAction {
+  app: string;
+  tool: string;
+  /** Human label for the action, e.g. "Update campaign". */
+  label: string;
+  input: Record<string, unknown>;
+}
+
 export interface AiRunResult {
   answer: string;
   /** App slugs whose tools were made available for this run. */
@@ -52,7 +91,26 @@ export interface AiRunResult {
   actions: AiAction[];
   /** Spaces Gomer built during this run. */
   spaces: AiSpace[];
+  /** A write awaiting the user's button approval, when in interactive mode. */
+  pendingAction: AiPendingAction | null;
 }
+
+/** How a run gates write actions: soft `confirmed` flag vs. out-of-band buttons. */
+export type ConfirmMode = 'inline' | 'buttons';
+
+/** Readable labels for the gated Meta Ads write tools, shown on the approval card. */
+const META_WRITE_LABELS: Record<string, string> = {
+  [META_ADS_CREATE_CAMPAIGN]: 'Create campaign',
+  [META_ADS_UPDATE_CAMPAIGN]: 'Update campaign',
+  [META_ADS_DELETE_CAMPAIGN]: 'Delete campaign',
+  [META_ADS_CREATE_AD_SET]: 'Create ad set',
+  [META_ADS_UPDATE_AD_SET]: 'Update ad set',
+  [META_ADS_DELETE_AD_SET]: 'Delete ad set',
+  [META_ADS_CREATE_AD_CREATIVE]: 'Create ad creative',
+  [META_ADS_CREATE_AD]: 'Create ad',
+  [META_ADS_UPDATE_AD]: 'Update ad',
+  [META_ADS_DELETE_AD]: 'Delete ad',
+};
 
 /**
  * Orchestrates Gomer's model calls. Connected integrations are exposed to
@@ -69,6 +127,7 @@ export class AiService {
     private readonly configService: ConfigService<AppConfig, true>,
     private readonly integrationsService: IntegrationsService,
     private readonly pipedream: PipedreamService,
+    private readonly metaAds: MetaAdsService,
     private readonly spacesService: SpacesService,
     private readonly usageService: UsageService,
     private readonly usersService: UsersService,
@@ -109,27 +168,36 @@ export class AiService {
       /** Lazily resolves the workspace's total member count (e.g. Slack roster),
        * used by the workspace-stats tool. Optional — omitted off-Slack. */
       fetchMemberCount?: () => Promise<number | null>;
+      /** How Meta Ads writes are confirmed: 'buttons' defers them to an
+       * out-of-band approval (Slack), 'inline' (default) uses the soft flag. */
+      confirmVia?: ConfirmMode;
     } = {},
   ): Promise<AiRunResult> {
+    const confirmVia: ConfirmMode = options.confirmVia ?? 'inline';
     const ai = this.configService.get('ai', { infer: true });
     const model = options.model ?? ai.model;
     const client = this.getClient();
 
     // Only the accounts this member may use become tools: every team account
-    // plus their own private ones. Each scope lives under a different Pipedream
-    // external user, so we build MCP servers per scope — a private account is
-    // unreachable from another member's run.
+    // plus their own private ones. Pipedream apps live under a per-scope external
+    // user (a private account is unreachable from another member's run); Meta
+    // connections are their own OAuth grants, resolved separately below.
     const connected = (
       await this.integrationsService.findVisibleForUser(workspaceId, userId ?? '')
     ).filter((c) => c.isActive);
+    const pipedreamConnected = connected.filter((c) => c.provider === 'pipedream');
     const teamSlugs = [
-      ...new Set(connected.filter((c) => c.accessLevel === 'team').map((c) => c.appSlug)),
+      ...new Set(pipedreamConnected.filter((c) => c.accessLevel === 'team').map((c) => c.appSlug)),
     ];
     const privateSlugs = userId
-      ? [...new Set(connected.filter((c) => c.accessLevel === 'private').map((c) => c.appSlug))]
+      ? [
+          ...new Set(
+            pipedreamConnected.filter((c) => c.accessLevel === 'private').map((c) => c.appSlug),
+          ),
+        ]
       : [];
 
-    const servers = [
+    const pipedreamServers = [
       ...(teamSlugs.length ? this.pipedream.buildMcpServers(workspaceId, teamSlugs) : []),
       ...(privateSlugs.length && userId
         ? this.pipedream.buildMcpServers(
@@ -138,33 +206,81 @@ export class AiService {
           )
         : []),
     ];
-    const appSlugs = [...new Set(servers.map((server) => server.appSlug))];
-    const accessToken = servers.length ? await this.pipedream.getAccessToken() : null;
+    // Pipedream shares one access token across its servers.
+    const pipedreamToken = pipedreamServers.length ? await this.pipedream.getAccessToken() : null;
+    const servers = pipedreamServers.map((server) => ({
+      appSlug: server.appSlug,
+      name: server.name,
+      url: server.url,
+      authorizationToken: pipedreamToken ?? undefined,
+    }));
 
-    // Connected apps become server-side MCP toolsets; Spaces tools are local
-    // (custom) tools we execute ourselves and feed results back. Both are `let`
-    // because a dead MCP server makes Anthropic reject the whole request, so we
-    // drop the connector and retry with only the local tools (see the loop).
+    // Meta Ads is NOT exposed as an MCP server: Meta's hosted Ads MCP is
+    // allowlist-gated and rejects our token, which would 400 the whole request
+    // (taking the Pipedream connectors down with it). Instead we serve Meta as
+    // native local tools that call the Marketing API with the stored token.
+    const hasMeta = connected.some((c) => c.provider === 'meta');
+    const localTools: Anthropic.Beta.BetaToolUnion[] = [
+      ...LOCAL_TOOLS,
+      ...(hasMeta ? META_ADS_TOOLS : []),
+    ];
+
+    let appSlugs = [
+      ...new Set([...servers.map((server) => server.appSlug), ...(hasMeta ? ['meta_ads'] : [])]),
+    ];
+
+    // Name the connected apps in the system prompt so the model can accurately
+    // confirm what's usable right now (e.g. for a "what can you do?" answer)
+    // instead of guessing. Meta stores no appName, so label it explicitly.
+    const connectedAppNames = [
+      ...new Set([
+        ...connected.filter((c) => c.provider === 'pipedream').map((c) => c.appName ?? c.appSlug),
+        ...(hasMeta ? ['Meta Ads'] : []),
+      ]),
+    ].filter(Boolean);
+    let system = connectedAppNames.length
+      ? `${SYSTEM_PROMPT}\n\nApps connected and usable right now: ${connectedAppNames.join(', ')}.`
+      : SYSTEM_PROMPT;
+    // In button mode the platform gates Meta Ads writes with an out-of-band
+    // approval, so the model must actually CALL the write tool (not ask in
+    // prose) — calling it does not execute it; it triggers the approval buttons.
+    if (confirmVia === 'buttons' && hasMeta) {
+      system +=
+        '\n\nFor Meta Ads write actions (create/update/delete a campaign, ad set, creative, or ' +
+        'ad; changing budgets or status), do NOT ask for confirmation in your text. Instead call ' +
+        'the appropriate tool directly with your best parameters. Calling it does not execute ' +
+        'anything — the platform automatically pauses and shows the user Approve/Cancel buttons, ' +
+        'and only runs the action if they approve. First gather any ids you need with read tools, ' +
+        'then call the one write tool and, in one short line, state exactly what you are about to do.';
+    }
+
+    // Connected apps become server-side MCP toolsets; local tools (Spaces,
+    // workspace stats, Meta Ads) we execute ourselves and feed results back.
+    // Both are `let` because a dead MCP server makes Anthropic reject the whole
+    // request, so we drop the connector and retry with only the local tools.
     let mcpServers = servers.map((server) => ({
       type: 'url' as const,
       url: server.url,
       name: server.name,
-      authorization_token: accessToken ?? undefined,
+      authorization_token: server.authorizationToken,
     }));
     let tools: Anthropic.Beta.BetaToolUnion[] = [
       ...servers.map((server) => ({
         type: 'mcp_toolset' as const,
         mcp_server_name: server.name,
       })),
-      ...LOCAL_TOOLS,
+      ...localTools,
     ];
-    // Whether connected apps were actually available for this run; cleared if we
-    // fall back after an MCP connection failure so callers don't over-promise.
-    let appsAvailable = servers.length > 0;
+    // Whether connected apps were available for this run; on an MCP failure the
+    // Pipedream toolsets drop but the Meta local tools survive.
+    let appsAvailable = servers.length > 0 || hasMeta;
 
     const messages: Anthropic.Beta.BetaMessageParam[] = [{ role: 'user', content: prompt }];
     const actions: AiAction[] = [];
     const spaces: AiSpace[] = [];
+    // In button mode, the first Meta write the model proposes is captured here
+    // (rather than executed) so the surface can request approval out of band.
+    const pending: { current: AiPendingAction | null } = { current: null };
     let answer = '';
     let tokensUsed = 0;
 
@@ -174,7 +290,7 @@ export class AiService {
     for (let i = 0; i < 6; i += 1) {
       let response: Anthropic.Beta.BetaMessage;
       try {
-        response = await this.create(client, model, messages, mcpServers, tools);
+        response = await this.create(client, model, system, messages, mcpServers, tools);
       } catch (error) {
         // A single unreachable Pipedream MCP server makes Anthropic 400 the whole
         // request, which would otherwise fail even prompts that need no app. Drop
@@ -184,9 +300,10 @@ export class AiService {
           'A connected-app MCP server was unreachable; retrying without connected apps',
         );
         mcpServers = [];
-        tools = [...LOCAL_TOOLS];
-        appsAvailable = false;
-        response = await this.create(client, model, messages, mcpServers, tools);
+        tools = [...localTools];
+        appSlugs = hasMeta ? ['meta_ads'] : [];
+        appsAvailable = hasMeta;
+        response = await this.create(client, model, system, messages, mcpServers, tools);
       }
       tokensUsed += response.usage.input_tokens + response.usage.output_tokens;
 
@@ -208,9 +325,22 @@ export class AiService {
         messages.push({ role: 'assistant', content: response.content });
         const results: Anthropic.Beta.BetaToolResultBlockParam[] = [];
         for (const toolUse of toolUses) {
-          results.push(
-            await this.runLocalTool(workspaceId, userId, toolUse, spaces, options.fetchMemberCount),
+          const result = await this.runLocalTool(
+            workspaceId,
+            userId,
+            toolUse,
+            spaces,
+            { confirmVia, pending },
+            options.fetchMemberCount,
           );
+          // Local tools run on our side, so (unlike MCP tools) they produce no
+          // mcp_tool_use block — record the action here for the run's audit.
+          actions.push({
+            app: this.localToolApp(toolUse.name),
+            tool: toolUse.name,
+            isError: result.is_error ?? false,
+          });
+          results.push(result);
         }
         messages.push({ role: 'user', content: results });
         continue;
@@ -229,7 +359,13 @@ export class AiService {
       sourceName: options.sourceName,
     });
 
-    return { answer: answer.trim(), connectedApps: appsAvailable ? appSlugs : [], actions, spaces };
+    return {
+      answer: answer.trim(),
+      connectedApps: appsAvailable ? appSlugs : [],
+      actions,
+      spaces,
+      pendingAction: pending.current,
+    };
   }
 
   /**
@@ -237,17 +373,250 @@ export class AiService {
    * unlike the connected-app MCP tools, which Anthropic executes server-side —
    * and their results are fed back into the conversation.
    */
+  /** The app label a local tool's action is attributed to in the run audit. */
+  private localToolApp(toolName: string): string {
+    if (META_ADS_TOOL_NAMES.has(toolName)) return 'meta_ads';
+    if (toolName === GET_WORKSPACE_STATS) return 'workspace';
+    return 'spaces';
+  }
+
   private runLocalTool(
     workspaceId: string,
     userId: string | null,
     toolUse: Anthropic.Beta.BetaToolUseBlock,
     spaces: AiSpace[],
+    ctx: { confirmVia: ConfirmMode; pending: { current: AiPendingAction | null } },
     fetchMemberCount?: () => Promise<number | null>,
   ): Promise<Anthropic.Beta.BetaToolResultBlockParam> {
     if (toolUse.name === GET_WORKSPACE_STATS) {
       return this.runWorkspaceStatsTool(workspaceId, toolUse, fetchMemberCount);
     }
+    if (META_ADS_TOOL_NAMES.has(toolUse.name)) {
+      return this.runMetaAdsTool(workspaceId, userId, toolUse, ctx);
+    }
     return this.runSpaceTool(workspaceId, userId, toolUse, spaces);
+  }
+
+  /**
+   * Execute a Meta Ads tool against the Marketing API using the member's stored
+   * Meta token. A missing connection or an API error becomes an error result the
+   * model can relay, never a failed request.
+   */
+  private async runMetaAdsTool(
+    workspaceId: string,
+    userId: string | null,
+    toolUse: Anthropic.Beta.BetaToolUseBlock,
+    ctx: { confirmVia: ConfirmMode; pending: { current: AiPendingAction | null } },
+  ): Promise<Anthropic.Beta.BetaToolResultBlockParam> {
+    const input = (toolUse.input ?? {}) as Record<string, unknown>;
+    const isWrite = META_ADS_WRITE_TOOL_NAMES.has(toolUse.name);
+
+    // In button mode, a write never runs inline: capture it (once) so the
+    // surface can render Approve/Cancel buttons, then tell the model to describe
+    // the action and stop. The real execution happens on approval, out of band.
+    if (isWrite && ctx.confirmVia === 'buttons') {
+      if (!ctx.pending.current) {
+        ctx.pending.current = {
+          app: 'meta_ads',
+          tool: toolUse.name,
+          label: META_WRITE_LABELS[toolUse.name] ?? toolUse.name,
+          input,
+        };
+      }
+      return {
+        type: 'tool_result',
+        tool_use_id: toolUse.id,
+        content:
+          'Not executed yet — this change needs the user’s approval, which will be requested ' +
+          'via Approve/Cancel buttons shown under your reply. In your reply, state exactly what ' +
+          'you will do (account, campaign/ad set, budget, status) in one short paragraph, then ' +
+          'stop. Do not call this tool again and do not claim it is done.',
+      };
+    }
+
+    try {
+      const token = await this.integrationsService.getMetaAccessToken(workspaceId, userId ?? '');
+      if (!token) {
+        return {
+          type: 'tool_result',
+          tool_use_id: toolUse.id,
+          content: 'No active Meta Ads connection is available for this workspace.',
+          is_error: true,
+        };
+      }
+
+      // Inline mode: write tools only run once the model sets `confirmed` after
+      // the user has approved. Refuse otherwise — a non-error result so the model
+      // asks the user and retries.
+      if (isWrite && input.confirmed !== true) {
+        return {
+          type: 'tool_result',
+          tool_use_id: toolUse.id,
+          content:
+            'Not executed: this changes a live ad account. Describe the exact action to the user, ' +
+            'get their explicit confirmation, then call again with confirmed=true.',
+        };
+      }
+
+      const result = await this.dispatchMetaAdsTool(token, toolUse.name, input);
+      return {
+        type: 'tool_result',
+        tool_use_id: toolUse.id,
+        content: JSON.stringify(result),
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Meta Ads tool ${toolUse.name} failed: ${message}`);
+      return {
+        type: 'tool_result',
+        tool_use_id: toolUse.id,
+        content: `Meta Ads request failed: ${message}`,
+        is_error: true,
+      };
+    }
+  }
+
+  /**
+   * Execute a previously-proposed Meta Ads write after the user approved it via
+   * buttons. Returns a short human summary (success or failure) for the surface
+   * to post — the approval itself is the confirmation, so no `confirmed` flag.
+   */
+  async executeMetaAdsAction(
+    workspaceId: string,
+    userId: string | null,
+    toolName: string,
+    input: Record<string, unknown>,
+  ): Promise<{ ok: boolean; summary: string }> {
+    try {
+      const token = await this.integrationsService.getMetaAccessToken(workspaceId, userId ?? '');
+      if (!token) {
+        return { ok: false, summary: 'No active Meta Ads connection is available.' };
+      }
+      const result = await this.dispatchMetaAdsTool(token, toolName, input);
+      return { ok: true, summary: this.summarizeMetaWrite(toolName, result) };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Meta Ads action ${toolName} failed: ${message}`);
+      return { ok: false, summary: `Meta Ads request failed: ${message}` };
+    }
+  }
+
+  /** A short, human confirmation line for a completed Meta Ads write. */
+  private summarizeMetaWrite(toolName: string, result: unknown): string {
+    const label = META_WRITE_LABELS[toolName] ?? toolName;
+    const id =
+      result && typeof result === 'object' && 'id' in result
+        ? String((result as { id: unknown }).id)
+        : null;
+    if (toolName.includes('create') && id)
+      return `Done — ${label.toLowerCase()} (id ${id}), paused.`;
+    return `Done — ${label.toLowerCase()} completed.`;
+  }
+
+  /**
+   * Dispatch a Meta Ads tool to its Marketing-API call. Pure execution — the
+   * confirm/approval gating lives in the callers ({@link runMetaAdsTool} and
+   * {@link executeMetaAdsAction}). Returns the raw API result; throws on failure.
+   */
+  private async dispatchMetaAdsTool(
+    token: string,
+    toolName: string,
+    input: Record<string, unknown>,
+  ): Promise<unknown> {
+    let result: unknown;
+    {
+      const toolUse = { name: toolName } as { name: string };
+      if (toolUse.name === META_ADS_LIST_AD_ACCOUNTS) {
+        result = await this.metaAds.listAdAccounts(token);
+      } else if (toolUse.name === META_ADS_GET_INSIGHTS) {
+        result = await this.metaAds.getInsights(token, {
+          adAccountId: String(input.ad_account_id),
+          level: input.level as 'account' | 'campaign' | 'adset' | 'ad' | undefined,
+          datePreset: input.date_preset as string | undefined,
+          since: input.since as string | undefined,
+          until: input.until as string | undefined,
+          fields: input.fields as string[] | undefined,
+        });
+      } else if (toolUse.name === META_ADS_LIST_CAMPAIGNS) {
+        result = await this.metaAds.listCampaigns(token, {
+          adAccountId: String(input.ad_account_id),
+          effectiveStatus: input.effective_status as string[] | undefined,
+        });
+      } else if (toolUse.name === META_ADS_CREATE_CAMPAIGN) {
+        result = await this.metaAds.createCampaign(token, {
+          adAccountId: String(input.ad_account_id),
+          name: String(input.name),
+          objective: String(input.objective),
+          dailyBudget: input.daily_budget as number | undefined,
+        });
+      } else if (toolUse.name === META_ADS_UPDATE_CAMPAIGN) {
+        result = await this.metaAds.updateCampaign(token, {
+          campaignId: String(input.campaign_id),
+          name: input.name as string | undefined,
+          status: input.status as 'ACTIVE' | 'PAUSED' | undefined,
+          dailyBudget: input.daily_budget as number | undefined,
+        });
+      } else if (toolUse.name === META_ADS_DELETE_CAMPAIGN) {
+        result = await this.metaAds.deleteCampaign(token, String(input.campaign_id));
+      } else if (toolUse.name === META_ADS_LIST_AD_SETS) {
+        result = await this.metaAds.listAdSets(token, String(input.campaign_id));
+      } else if (toolUse.name === META_ADS_CREATE_AD_SET) {
+        result = await this.metaAds.createAdSet(token, {
+          adAccountId: String(input.ad_account_id),
+          campaignId: String(input.campaign_id),
+          name: String(input.name),
+          optimizationGoal: String(input.optimization_goal),
+          billingEvent: String(input.billing_event),
+          targeting: (input.targeting ?? {}) as Record<string, unknown>,
+          dailyBudget: input.daily_budget as number | undefined,
+          startTime: input.start_time as string | undefined,
+        });
+      } else if (toolUse.name === META_ADS_UPDATE_AD_SET) {
+        result = await this.metaAds.updateAdSet(token, {
+          adSetId: String(input.ad_set_id),
+          name: input.name as string | undefined,
+          status: input.status as 'ACTIVE' | 'PAUSED' | undefined,
+          dailyBudget: input.daily_budget as number | undefined,
+        });
+      } else if (toolUse.name === META_ADS_DELETE_AD_SET) {
+        result = await this.metaAds.deleteAdSet(token, String(input.ad_set_id));
+      } else if (toolUse.name === META_ADS_LIST_ADS) {
+        result = await this.metaAds.listAds(token, String(input.ad_set_id));
+      } else if (toolUse.name === META_ADS_CREATE_AD_CREATIVE) {
+        result = await this.metaAds.createAdCreative(token, {
+          adAccountId: String(input.ad_account_id),
+          name: String(input.name),
+          pageId: String(input.page_id),
+          link: String(input.link),
+          message: String(input.message),
+          headline: input.headline as string | undefined,
+          imageUrl: input.image_url as string | undefined,
+          callToAction: input.call_to_action as string | undefined,
+        });
+      } else if (toolUse.name === META_ADS_CREATE_AD) {
+        result = await this.metaAds.createAd(token, {
+          adAccountId: String(input.ad_account_id),
+          name: String(input.name),
+          adSetId: String(input.ad_set_id),
+          creativeId: String(input.creative_id),
+        });
+      } else if (toolUse.name === META_ADS_UPDATE_AD) {
+        result = await this.metaAds.updateAd(token, {
+          adId: String(input.ad_id),
+          name: input.name as string | undefined,
+          status: input.status as 'ACTIVE' | 'PAUSED' | undefined,
+        });
+      } else if (toolUse.name === META_ADS_DELETE_AD) {
+        result = await this.metaAds.deleteAd(token, String(input.ad_id));
+      } else if (toolUse.name === META_ADS_LIST_PAGES) {
+        result = await this.metaAds.listPages(token);
+      } else if (toolUse.name === META_ADS_SEARCH_INTERESTS) {
+        result = await this.metaAds.searchInterests(token, String(input.query));
+      } else {
+        throw new Error(`Unknown Meta Ads tool: ${toolUse.name}`);
+      }
+    }
+    return result;
   }
 
   /**
@@ -396,6 +765,7 @@ export class AiService {
   private async create(
     client: Anthropic,
     model: string,
+    system: string,
     messages: Anthropic.Beta.BetaMessageParam[],
     mcpServers: Array<{ type: 'url'; url: string; name: string; authorization_token?: string }>,
     tools: Anthropic.Beta.BetaToolUnion[],
@@ -405,7 +775,7 @@ export class AiService {
         model,
         max_tokens: 8000,
         thinking: { type: 'adaptive' },
-        system: SYSTEM_PROMPT,
+        system,
         messages,
         ...(tools.length ? { tools } : {}),
         ...(mcpServers.length ? { mcp_servers: mcpServers } : {}),

@@ -44,6 +44,14 @@ export class ScheduledTask {
   @Column({ type: 'text' })
   prompt!: string;
 
+  /**
+   * Slack destination this task's output is delivered to: a channel/group id, or
+   * a user id (a DM is opened for it). Null means the task runs silently — its
+   * answer is not posted (e.g. a task that only acts via a connected app).
+   */
+  @Column({ type: 'varchar', length: 64, nullable: true })
+  slackChannelId!: string | null;
+
   @Column({ type: 'boolean', default: true })
   isActive!: boolean;
 

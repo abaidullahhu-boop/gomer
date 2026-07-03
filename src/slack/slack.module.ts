@@ -6,6 +6,7 @@ import { UsersModule } from '../users/users.module';
 import { WorkspacesModule } from '../workspaces/workspaces.module';
 import { SlackController } from './slack.controller';
 import { SlackEventsService } from './slack-events.service';
+import { SlackInteractionsService } from './slack-interactions.service';
 import { SlackService } from './slack.service';
 
 @Module({
@@ -17,7 +18,7 @@ import { SlackService } from './slack.service';
     UsersModule,
   ],
   controllers: [SlackController],
-  providers: [SlackService, SlackEventsService],
+  providers: [SlackService, SlackEventsService, SlackInteractionsService],
   exports: [SlackService],
 })
 export class SlackModule {}
