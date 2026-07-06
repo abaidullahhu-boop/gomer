@@ -8,6 +8,7 @@ import { MetaAdsService } from '../integrations/meta-ads.service';
 import { ConversationTurn } from '../memory/messages.service';
 import { WorkspaceMemoryService } from '../memory/workspace-memory.service';
 import { PipedreamService } from '../integrations/pipedream.service';
+import { RoasService } from '../integrations/roas.service';
 import { SpacesService } from '../spaces/spaces.service';
 import { UsageService } from '../usage/usage.service';
 import { UsersService } from '../users/users.service';
@@ -39,6 +40,7 @@ import {
   MEMORY_TOOL_NAMES,
   MEMORY_TOOLS,
 } from './memory-tools';
+import { ROAS_TOOL_NAMES, ROAS_TOOLS, VERIFY_ROAS } from './roas-tools';
 import { SPACE_TOOLS } from './space-tools';
 import { GET_WORKSPACE_STATS, WORKSPACE_TOOLS } from './workspace-tools';
 
@@ -146,6 +148,7 @@ export class AiService {
     private readonly usageService: UsageService,
     private readonly usersService: UsersService,
     private readonly workspaceMemory: WorkspaceMemoryService,
+    private readonly roasService: RoasService,
   ) {}
 
   getStatus(): { module: string; ready: boolean; provider: string } {
@@ -238,9 +241,13 @@ export class AiService {
     // (taking the Pipedream connectors down with it). Instead we serve Meta as
     // native local tools that call the Marketing API with the stored token.
     const hasMeta = connected.some((c) => c.provider === 'meta');
+    // Verified ROAS needs both sides: Meta for spend, Stripe for real revenue.
+    const hasStripe = pipedreamConnected.some((c) => c.appSlug === 'stripe');
+    const hasRoas = hasMeta && hasStripe;
     const localTools: Anthropic.Beta.BetaToolUnion[] = [
       ...LOCAL_TOOLS,
       ...(hasMeta ? META_ADS_TOOLS : []),
+      ...(hasRoas ? ROAS_TOOLS : []),
     ];
 
     let appSlugs = [
@@ -264,6 +271,24 @@ export class AiService {
     // a read failure or an empty memory.
     const memoryBlock = await this.workspaceMemory.buildPromptBlock(workspaceId);
     if (memoryBlock) system += `\n\n${memoryBlock}`;
+    // Verified-ROAS guidance rides along only when the tools do.
+    if (hasRoas) {
+      system +=
+        '\n\nBoth Meta Ads and Stripe are connected, so you can VERIFY ad performance instead of ' +
+        "trusting Meta's self-reported conversions: use verify_roas to pair Meta spend with actual " +
+        'Stripe revenue for any profitability question ("what\'s our real ROAS?"). Prefer it over ' +
+        'Meta-only numbers, present both when they differ, and always mention its caveats (blended ' +
+        'revenue, currency notes). Past results are queryable with list_roas_snapshots.';
+    }
+    // Sheets-export guidance: nudge report answers toward the connected sheet.
+    if (pipedreamConnected.some((c) => c.appSlug === 'google_sheets')) {
+      system +=
+        '\n\nGoogle Sheets is connected: you can export reports, insights, or ROAS history to a ' +
+        'spreadsheet with the Google Sheets tools (add rows / create a worksheet). When the user asks ' +
+        'for a recurring or shareable report, offer the export. Reuse a remembered sheet (e.g. an ' +
+        '"export_sheet_id" fact) instead of creating new spreadsheets each time, and remember the ' +
+        'sheet id the first time one is chosen.';
+    }
     // In button mode the platform gates Meta Ads writes with an out-of-band
     // approval, so the model must actually CALL the write tool (not ask in
     // prose) — calling it does not execute it; it triggers the approval buttons.
@@ -407,6 +432,7 @@ export class AiService {
     if (META_ADS_TOOL_NAMES.has(toolName)) return 'meta_ads';
     if (toolName === GET_WORKSPACE_STATS) return 'workspace';
     if (MEMORY_TOOL_NAMES.has(toolName)) return 'memory';
+    if (ROAS_TOOL_NAMES.has(toolName)) return 'roas';
     return 'spaces';
   }
 
@@ -427,7 +453,73 @@ export class AiService {
     if (MEMORY_TOOL_NAMES.has(toolUse.name)) {
       return this.runMemoryTool(workspaceId, userId, toolUse);
     }
+    if (ROAS_TOOL_NAMES.has(toolUse.name)) {
+      return this.runRoasTool(workspaceId, userId, toolUse);
+    }
     return this.runSpaceTool(workspaceId, userId, toolUse, spaces);
+  }
+
+  /**
+   * Execute a verified-ROAS tool: pair Meta spend with actual Stripe revenue
+   * (verify_roas) or read back past snapshots. Read-only against both APIs — no
+   * confirmation gate needed. A missing connection or API error becomes an
+   * error result the model can relay, never a failed request.
+   */
+  private async runRoasTool(
+    workspaceId: string,
+    userId: string | null,
+    toolUse: Anthropic.Beta.BetaToolUseBlock,
+  ): Promise<Anthropic.Beta.BetaToolResultBlockParam> {
+    const input = (toolUse.input ?? {}) as Record<string, unknown>;
+    try {
+      if (toolUse.name === VERIFY_ROAS) {
+        const result = await this.roasService.verify(workspaceId, userId, {
+          adAccountId: String(input.ad_account_id),
+          since: String(input.since),
+          until: String(input.until),
+          currency: input.currency as string | undefined,
+        });
+        return {
+          type: 'tool_result',
+          tool_use_id: toolUse.id,
+          content: JSON.stringify(result),
+        };
+      }
+      // Remaining ROAS tool: list_roas_snapshots.
+      const snapshots = await this.roasService.listSnapshots(
+        workspaceId,
+        typeof input.limit === 'number' ? input.limit : undefined,
+      );
+      return {
+        type: 'tool_result',
+        tool_use_id: toolUse.id,
+        content: JSON.stringify(
+          snapshots.map((snapshot) => ({
+            adAccountId: snapshot.adAccountId,
+            since: snapshot.sinceDate,
+            until: snapshot.untilDate,
+            metaSpend: snapshot.metaSpend,
+            spendCurrency: snapshot.spendCurrency,
+            stripeRevenue: snapshot.stripeRevenue,
+            revenueCurrency: snapshot.revenueCurrency,
+            roas: snapshot.roas,
+            purchases: snapshot.purchases,
+            cpa: snapshot.cpa,
+            caveats: snapshot.caveats,
+            verifiedAt: snapshot.createdAt.toISOString(),
+          })),
+        ),
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`ROAS tool ${toolUse.name} failed: ${message}`);
+      return {
+        type: 'tool_result',
+        tool_use_id: toolUse.id,
+        content: `ROAS verification failed: ${message}`,
+        is_error: true,
+      };
+    }
   }
 
   /**

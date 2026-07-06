@@ -432,6 +432,41 @@ export class IntegrationsService {
   }
 
   /**
+   * Resolve the Stripe secret API key of the member's visible Stripe connection
+   * (team accounts preferred over private), by pulling the stored credentials
+   * from Pipedream. Used by ROAS verification to read revenue directly — a
+   * deterministic server-side computation rather than MCP round-trips. Returns
+   * null when no usable Stripe account is connected.
+   */
+  async getStripeApiKey(workspaceId: string, userId: string): Promise<string | null> {
+    const visible = (await this.findVisibleForUser(workspaceId, userId)).filter(
+      (row) =>
+        row.isActive &&
+        row.provider === 'pipedream' &&
+        row.appSlug === 'stripe' &&
+        row.externalAccountId,
+    );
+    // Team accounts first: the shared connection is the workspace's source of truth.
+    visible.sort((a, b) =>
+      a.accessLevel === b.accessLevel ? 0 : a.accessLevel === 'team' ? -1 : 1,
+    );
+
+    for (const row of visible) {
+      try {
+        const credentials = await this.pipedream.getAccountCredentials(row.externalAccountId!);
+        // Stripe connects with a secret key; cover the field spellings Pipedream
+        // uses for key-auth apps, plus OAuth token material as a fallback.
+        const key = credentials?.api_key ?? credentials?.apiKey ?? credentials?.oauthAccessToken;
+        if (typeof key === 'string' && key) return key;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`Failed to read Stripe credentials for ${row.id}: ${message}`);
+      }
+    }
+    return null;
+  }
+
+  /**
    * Resolve a valid Meta access token for the member's run — the freshest token
    * of the first visible active Meta account. Used by the native Meta Ads tools,
    * which call the Marketing API directly (Meta's hosted MCP is allowlist-gated

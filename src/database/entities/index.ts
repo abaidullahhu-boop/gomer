@@ -7,6 +7,7 @@ export * from './scheduled-task.entity';
 export * from './credit-event.entity';
 export * from './message.entity';
 export * from './workspace-memory.entity';
+export * from './roas-snapshot.entity';
 export * from './space.entity';
 export * from './space-user.entity';
 export * from './space-auth-token.entity';
@@ -15,6 +16,7 @@ export * from './space-record.entity';
 import { CreditEvent } from './credit-event.entity';
 import { Integration } from './integration.entity';
 import { Message } from './message.entity';
+import { RoasSnapshot } from './roas-snapshot.entity';
 import { ScheduledTask } from './scheduled-task.entity';
 import { Skill } from './skill.entity';
 import { SpaceAuthToken } from './space-auth-token.entity';
@@ -37,6 +39,7 @@ export const entities = [
   CreditEvent,
   Message,
   WorkspaceMemory,
+  RoasSnapshot,
   Space,
   SpaceUser,
   SpaceAuthToken,

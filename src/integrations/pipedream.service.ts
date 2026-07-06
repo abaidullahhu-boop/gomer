@@ -143,6 +143,24 @@ export class PipedreamService implements OnModuleInit {
     return accounts.find((account) => account.id === accountId) ?? null;
   }
 
+  /**
+   * Fetch an account's stored credentials (API key / OAuth token material).
+   * Used to call an app's API directly when the model needs deterministic,
+   * server-side computation (e.g. Stripe revenue for ROAS verification) rather
+   * than MCP tool round-trips. Handle the result carefully — never log or
+   * surface it.
+   */
+  getAccountCredentials(accountId: string): Promise<Record<string, unknown> | null> {
+    return this.run('accounts.retrieve', async (client) => {
+      const account = await client.accounts.retrieve(
+        accountId,
+        { includeCredentials: true },
+        REQUEST_OPTIONS,
+      );
+      return (account.credentials as Record<string, unknown> | undefined) ?? null;
+    });
+  }
+
   /** Revoke a connected account at Pipedream. */
   async deleteAccount(accountId: string): Promise<void> {
     await this.run('accounts.delete', (client) =>
