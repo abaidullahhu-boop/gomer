@@ -1,5 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { AiService } from '../ai/ai.service';
+import { MessageRole } from '../common/enums';
+import { MessagesService } from '../memory/messages.service';
 import { UsersService } from '../users/users.service';
 import { WorkspacesService } from '../workspaces/workspaces.service';
 import {
@@ -38,6 +40,7 @@ export class SlackEventsService {
     private readonly usersService: UsersService,
     private readonly aiService: AiService,
     private readonly interactions: SlackInteractionsService,
+    private readonly messagesService: MessagesService,
   ) {}
 
   /** Handle an `event_callback` envelope. Safe to call without awaiting. */
@@ -74,6 +77,10 @@ export class SlackEventsService {
     // Reply in the same thread for mentions; DMs have no parent to thread under.
     const threadTs = message.thread_ts ?? message.ts;
     const messageTs = message.ts;
+    // Conversation-memory key: a DM has no thread_ts, so each message would be
+    // its own island — key DMs by their (per-user) channel for a rolling
+    // conversation instead. Channel mentions stay keyed by their thread.
+    const memoryThreadId = message.channel_type === 'im' ? channel : threadTs;
 
     // Signal "processing" by reacting to the user's own message rather than
     // posting a placeholder reply; the reaction is cleared once we answer.
@@ -86,8 +93,25 @@ export class SlackEventsService {
         ? await this.usersService.findBySlackIdentity(workspace.id, message.user)
         : null;
 
+      // Load prior turns BEFORE persisting this one, so the new prompt isn't
+      // duplicated in its own history. Both calls are best-effort inside
+      // MessagesService — memory never blocks a reply.
+      const history = memoryThreadId
+        ? await this.messagesService.getThread(workspace.id, memoryThreadId)
+        : [];
+      if (memoryThreadId) {
+        await this.messagesService.appendTurn(
+          workspace.id,
+          memoryThreadId,
+          member?.id ?? null,
+          MessageRole.USER,
+          prompt,
+        );
+      }
+
       const result = await this.aiService.run(workspace.id, member?.id ?? null, prompt, {
         sourceName: 'slack',
+        history,
         // Slack can approve gated writes with interactive buttons, so defer them
         // out of band rather than using the soft `confirmed` flag.
         confirmVia: 'buttons',
@@ -97,6 +121,17 @@ export class SlackEventsService {
       });
 
       const answer = result.answer || "I couldn't come up with a response to that.";
+
+      // Record Gomer's side of the turn so follow-ups in this thread see it.
+      if (memoryThreadId && result.answer) {
+        await this.messagesService.appendTurn(
+          workspace.id,
+          memoryThreadId,
+          null,
+          MessageRole.ASSISTANT,
+          result.answer,
+        );
+      }
 
       // A gated write is pending: post Gomer's description with Approve/Cancel
       // buttons and stash the action for the interaction callback. Requires a

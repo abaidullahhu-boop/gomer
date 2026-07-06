@@ -5,6 +5,8 @@ import { AppConfig } from '../config/configuration';
 import { CreditEventType } from '../common/enums';
 import { IntegrationsService } from '../integrations/integrations.service';
 import { MetaAdsService } from '../integrations/meta-ads.service';
+import { ConversationTurn } from '../memory/messages.service';
+import { WorkspaceMemoryService } from '../memory/workspace-memory.service';
 import { PipedreamService } from '../integrations/pipedream.service';
 import { SpacesService } from '../spaces/spaces.service';
 import { UsageService } from '../usage/usage.service';
@@ -31,6 +33,12 @@ import {
   META_ADS_UPDATE_CAMPAIGN,
   META_ADS_WRITE_TOOL_NAMES,
 } from './meta-ads-tools';
+import {
+  MEMORY_FORGET_FACT,
+  MEMORY_REMEMBER_FACT,
+  MEMORY_TOOL_NAMES,
+  MEMORY_TOOLS,
+} from './memory-tools';
 import { SPACE_TOOLS } from './space-tools';
 import { GET_WORKSPACE_STATS, WORKSPACE_TOOLS } from './workspace-tools';
 
@@ -42,13 +50,19 @@ const MCP_BETA = 'mcp-client-2025-11-20';
  * reading workspace facts. Sent on every run alongside any connected-app MCP
  * toolsets, and kept as the sole tools when the MCP connector is dropped.
  */
-const LOCAL_TOOLS: Anthropic.Beta.BetaToolUnion[] = [...SPACE_TOOLS, ...WORKSPACE_TOOLS];
+const LOCAL_TOOLS: Anthropic.Beta.BetaToolUnion[] = [
+  ...SPACE_TOOLS,
+  ...WORKSPACE_TOOLS,
+  ...MEMORY_TOOLS,
+];
 
 const SYSTEM_PROMPT = `You are Gomer, an AI assistant for a workspace. You can take actions across the user's connected apps using the available tools. Prefer acting over describing: when a request maps to a tool, use it. When you lack a connected app needed for a request, say so plainly and name the app to connect. Before any action that creates, edits, deletes, or starts spending on a connected app — especially Meta Ads campaigns (creating, activating, changing budgets, or deleting) — state exactly what you will do and get the user's explicit confirmation first; never perform such actions speculatively.
 
 You can also build "Spaces" — full web apps with their own database, passwordless (magic-link) login, and hosting — using the create_space tool. Spaces suit CRUD/form/dashboard internal tools (e.g. a time logger, lead tracker, or content calendar). Describe the app as entities (data types with typed fields) and views (forms, tables, dashboards). Never invent or share end-user passwords; logins are always magic links. After building a Space, give the user its link.
 
 You can also answer questions about this workspace itself — how many members it has and which apps members have connected — with the get_workspace_stats tool. Use it instead of guessing or saying you have no way to know.
+
+You have a durable workspace memory that persists across every conversation. When the user states a lasting fact, preference, target, or standing instruction (e.g. "our target ROAS is 3", "always report in EUR"), save it with remember_fact — silently, without announcing it. Saved facts appear in your context under "Workspace memory"; treat them as current truth. Update a fact by re-saving its key; delete a retracted one with forget_fact. Never save transient, one-off request details.
 
 When the user asks what you can do — overall or about a specific connected app — give a structured, scannable answer rather than a one-liner: confirm which relevant app(s) are connected, name the specific account when a quick read-only tool call can tell you (e.g. list Meta ad accounts to name the account and currency), group the concrete capabilities into a few labelled sections, and finish with 2–3 example prompts the user could send. This capability-overview case is the one exception to the brevity rule below.
 
@@ -131,6 +145,7 @@ export class AiService {
     private readonly spacesService: SpacesService,
     private readonly usageService: UsageService,
     private readonly usersService: UsersService,
+    private readonly workspaceMemory: WorkspaceMemoryService,
   ) {}
 
   getStatus(): { module: string; ready: boolean; provider: string } {
@@ -171,6 +186,9 @@ export class AiService {
       /** How Meta Ads writes are confirmed: 'buttons' defers them to an
        * out-of-band approval (Slack), 'inline' (default) uses the soft flag. */
       confirmVia?: ConfirmMode;
+      /** Prior turns of this conversation (oldest first), replayed ahead of the
+       * prompt so the model has thread continuity. Omitted for fresh runs. */
+      history?: ConversationTurn[];
     } = {},
   ): Promise<AiRunResult> {
     const confirmVia: ConfirmMode = options.confirmVia ?? 'inline';
@@ -241,6 +259,11 @@ export class AiService {
     let system = connectedAppNames.length
       ? `${SYSTEM_PROMPT}\n\nApps connected and usable right now: ${connectedAppNames.join(', ')}.`
       : SYSTEM_PROMPT;
+    // Durable workspace facts ride along on every run so the model has standing
+    // context (targets, preferences) without a tool call. Best-effort: null on
+    // a read failure or an empty memory.
+    const memoryBlock = await this.workspaceMemory.buildPromptBlock(workspaceId);
+    if (memoryBlock) system += `\n\n${memoryBlock}`;
     // In button mode the platform gates Meta Ads writes with an out-of-band
     // approval, so the model must actually CALL the write tool (not ask in
     // prose) — calling it does not execute it; it triggers the approval buttons.
@@ -275,7 +298,13 @@ export class AiService {
     // Pipedream toolsets drop but the Meta local tools survive.
     let appsAvailable = servers.length > 0 || hasMeta;
 
-    const messages: Anthropic.Beta.BetaMessageParam[] = [{ role: 'user', content: prompt }];
+    // Prior turns (thread history) replay ahead of the new prompt, giving the
+    // model conversation continuity; only final text turns are stored/replayed,
+    // never tool_use blocks, so there are no dangling tool-result pairs.
+    const messages: Anthropic.Beta.BetaMessageParam[] = [
+      ...(options.history ?? []).map((turn) => ({ role: turn.role, content: turn.content })),
+      { role: 'user' as const, content: prompt },
+    ];
     const actions: AiAction[] = [];
     const spaces: AiSpace[] = [];
     // In button mode, the first Meta write the model proposes is captured here
@@ -377,6 +406,7 @@ export class AiService {
   private localToolApp(toolName: string): string {
     if (META_ADS_TOOL_NAMES.has(toolName)) return 'meta_ads';
     if (toolName === GET_WORKSPACE_STATS) return 'workspace';
+    if (MEMORY_TOOL_NAMES.has(toolName)) return 'memory';
     return 'spaces';
   }
 
@@ -394,7 +424,69 @@ export class AiService {
     if (META_ADS_TOOL_NAMES.has(toolUse.name)) {
       return this.runMetaAdsTool(workspaceId, userId, toolUse, ctx);
     }
+    if (MEMORY_TOOL_NAMES.has(toolUse.name)) {
+      return this.runMemoryTool(workspaceId, userId, toolUse);
+    }
     return this.runSpaceTool(workspaceId, userId, toolUse, spaces);
+  }
+
+  /**
+   * Execute a workspace-memory tool (remember/recall/forget a durable fact).
+   * A validation or DB error becomes an error result the model can relay,
+   * never a failed request.
+   */
+  private async runMemoryTool(
+    workspaceId: string,
+    userId: string | null,
+    toolUse: Anthropic.Beta.BetaToolUseBlock,
+  ): Promise<Anthropic.Beta.BetaToolResultBlockParam> {
+    const input = (toolUse.input ?? {}) as Record<string, unknown>;
+    try {
+      if (toolUse.name === MEMORY_REMEMBER_FACT) {
+        const fact = await this.workspaceMemory.remember(
+          workspaceId,
+          userId,
+          String(input.key ?? ''),
+          String(input.value ?? ''),
+        );
+        return {
+          type: 'tool_result',
+          tool_use_id: toolUse.id,
+          content: `Remembered "${fact.key}".`,
+        };
+      }
+      if (toolUse.name === MEMORY_FORGET_FACT) {
+        const key = String(input.key ?? '');
+        const existed = await this.workspaceMemory.forget(workspaceId, key);
+        return {
+          type: 'tool_result',
+          tool_use_id: toolUse.id,
+          content: existed ? `Forgot "${key}".` : `No fact named "${key}" was saved.`,
+        };
+      }
+      // Remaining memory tool: recall_facts — the full unabridged list.
+      const facts = await this.workspaceMemory.list(workspaceId);
+      return {
+        type: 'tool_result',
+        tool_use_id: toolUse.id,
+        content: JSON.stringify(
+          facts.map((fact) => ({
+            key: fact.key,
+            value: fact.value,
+            updatedAt: fact.updatedAt.toISOString(),
+          })),
+        ),
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Memory tool ${toolUse.name} failed: ${message}`);
+      return {
+        type: 'tool_result',
+        tool_use_id: toolUse.id,
+        content: `Memory operation failed: ${message}`,
+        is_error: true,
+      };
+    }
   }
 
   /**

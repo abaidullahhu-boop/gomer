@@ -6,6 +6,7 @@ export * from './user-skill.entity';
 export * from './scheduled-task.entity';
 export * from './credit-event.entity';
 export * from './message.entity';
+export * from './workspace-memory.entity';
 export * from './space.entity';
 export * from './space-user.entity';
 export * from './space-auth-token.entity';
@@ -22,6 +23,7 @@ import { SpaceUser } from './space-user.entity';
 import { Space } from './space.entity';
 import { User } from './user.entity';
 import { UserSkill } from './user-skill.entity';
+import { WorkspaceMemory } from './workspace-memory.entity';
 import { Workspace } from './workspace.entity';
 
 /** Convenience array of every entity, used for TypeORM registration. */
@@ -34,6 +36,7 @@ export const entities = [
   ScheduledTask,
   CreditEvent,
   Message,
+  WorkspaceMemory,
   Space,
   SpaceUser,
   SpaceAuthToken,
