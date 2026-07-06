@@ -199,6 +199,18 @@ export class MetaAdsService {
   }
 
   /**
+   * List every ad set in an ad account with its status and daily budget — used
+   * by the rule engine to resolve an ad set's current budget when scaling it
+   * (the account-wide analogue of {@link listAdSets}, which is per-campaign).
+   */
+  listAdSetsForAccount(accessToken: string, adAccountId: string): Promise<{ data: unknown[] }> {
+    return this.get(`${this.normalizeAccount(adAccountId)}/adsets`, accessToken, {
+      fields: 'id,name,status,effective_status,campaign_id,daily_budget',
+      limit: '200',
+    });
+  }
+
+  /**
    * Create an ad set (PAUSED). Meta now requires the Advantage-audience flag in
    * the targeting spec, so we default it off when the caller omits it.
    */

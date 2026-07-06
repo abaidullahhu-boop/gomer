@@ -9,6 +9,7 @@ import { ConversationTurn } from '../memory/messages.service';
 import { WorkspaceMemoryService } from '../memory/workspace-memory.service';
 import { PipedreamService } from '../integrations/pipedream.service';
 import { RoasService } from '../integrations/roas.service';
+import { RulesService } from '../rules/rules.service';
 import { SpacesService } from '../spaces/spaces.service';
 import { UsageService } from '../usage/usage.service';
 import { UsersService } from '../users/users.service';
@@ -41,6 +42,13 @@ import {
   MEMORY_TOOLS,
 } from './memory-tools';
 import { ROAS_TOOL_NAMES, ROAS_TOOLS, VERIFY_ROAS } from './roas-tools';
+import {
+  CREATE_AD_RULE,
+  DELETE_AD_RULE,
+  RULE_TOOL_NAMES,
+  RULE_TOOLS,
+  SET_AD_RULE_ACTIVE,
+} from './rule-tools';
 import { SPACE_TOOLS } from './space-tools';
 import { GET_WORKSPACE_STATS, WORKSPACE_TOOLS } from './workspace-tools';
 
@@ -149,6 +157,7 @@ export class AiService {
     private readonly usersService: UsersService,
     private readonly workspaceMemory: WorkspaceMemoryService,
     private readonly roasService: RoasService,
+    private readonly rulesService: RulesService,
   ) {}
 
   getStatus(): { module: string; ready: boolean; provider: string } {
@@ -248,6 +257,8 @@ export class AiService {
       ...LOCAL_TOOLS,
       ...(hasMeta ? META_ADS_TOOLS : []),
       ...(hasRoas ? ROAS_TOOLS : []),
+      // The rule engine acts on Meta, so its tools ride along with a Meta account.
+      ...(hasMeta ? RULE_TOOLS : []),
     ];
 
     let appSlugs = [
@@ -288,6 +299,17 @@ export class AiService {
         'for a recurring or shareable report, offer the export. Reuse a remembered sheet (e.g. an ' +
         '"export_sheet_id" fact) instead of creating new spreadsheets each time, and remember the ' +
         'sheet id the first time one is chosen.';
+    }
+    // Rule-engine guidance rides along with a Meta connection.
+    if (hasMeta) {
+      system +=
+        '\n\nYou can set up automated ad rules with create_ad_rule: scheduled checks that alert, ' +
+        'pause, or scale campaigns/ad sets when a metric (CPA, ROAS, spend…) breaches a threshold — ' +
+        'e.g. overnight pausing of losing campaigns or morning budget scaling of winners. ' +
+        'Pause/scale rules act autonomously within guardrails and report to Slack afterwards, so ' +
+        'ALWAYS describe the full rule (metric, threshold, window, action, schedule, guardrails) and ' +
+        'get explicit confirmation before creating one. Use remembered targets (e.g. target_roas) as ' +
+        'sensible defaults. Manage rules with list_ad_rules, set_ad_rule_active, and delete_ad_rule.';
     }
     // In button mode the platform gates Meta Ads writes with an out-of-band
     // approval, so the model must actually CALL the write tool (not ask in
@@ -433,6 +455,7 @@ export class AiService {
     if (toolName === GET_WORKSPACE_STATS) return 'workspace';
     if (MEMORY_TOOL_NAMES.has(toolName)) return 'memory';
     if (ROAS_TOOL_NAMES.has(toolName)) return 'roas';
+    if (RULE_TOOL_NAMES.has(toolName)) return 'rules';
     return 'spaces';
   }
 
@@ -456,7 +479,109 @@ export class AiService {
     if (ROAS_TOOL_NAMES.has(toolUse.name)) {
       return this.runRoasTool(workspaceId, userId, toolUse);
     }
+    if (RULE_TOOL_NAMES.has(toolUse.name)) {
+      return this.runRuleTool(workspaceId, userId, toolUse);
+    }
     return this.runSpaceTool(workspaceId, userId, toolUse, spaces);
+  }
+
+  /**
+   * Execute an ad-rule management tool (create/list/toggle/delete). Creating a
+   * rule only persists it — the RulesScheduler evaluates and acts later — so no
+   * ad account is touched here. A validation error becomes an error result the
+   * model can relay and correct, never a failed request.
+   */
+  private async runRuleTool(
+    workspaceId: string,
+    userId: string | null,
+    toolUse: Anthropic.Beta.BetaToolUseBlock,
+  ): Promise<Anthropic.Beta.BetaToolResultBlockParam> {
+    const input = (toolUse.input ?? {}) as Record<string, unknown>;
+    try {
+      if (toolUse.name === CREATE_AD_RULE) {
+        const rule = await this.rulesService.create(workspaceId, userId, {
+          name: String(input.name),
+          adAccountId: String(input.ad_account_id),
+          scope: input.scope as 'account' | 'campaign' | 'adset',
+          metric: input.metric as 'spend' | 'cpa' | 'roas' | 'verified_roas' | 'ctr' | 'cpc',
+          comparator: input.comparator as 'gt' | 'gte' | 'lt' | 'lte',
+          threshold: Number(input.threshold),
+          windowDays: input.window_days as number | undefined,
+          action: input.action as 'alert' | 'pause' | 'scale',
+          scalePct: input.scale_pct as number | undefined,
+          cronExpression: String(input.cron_expression),
+          timezone: input.timezone as string | undefined,
+          slackChannelId: input.slack_channel_id as string | undefined,
+          autoExecute: input.auto_execute as boolean | undefined,
+          maxScalePct: input.max_scale_pct as number | undefined,
+          maxActionsPerRun: input.max_actions_per_run as number | undefined,
+          dailyActionCap: input.daily_action_cap as number | undefined,
+        });
+        return {
+          type: 'tool_result',
+          tool_use_id: toolUse.id,
+          content: `Rule "${rule.name}" created (id ${rule.id}); first run ${
+            rule.nextRun ? rule.nextRun.toISOString() : 'unscheduled'
+          }.`,
+        };
+      }
+      if (toolUse.name === SET_AD_RULE_ACTIVE) {
+        const rule = await this.rulesService.setActive(
+          workspaceId,
+          String(input.rule_id),
+          Boolean(input.is_active),
+        );
+        return {
+          type: 'tool_result',
+          tool_use_id: toolUse.id,
+          content: `Rule "${rule.name}" is now ${rule.isActive ? 'active' : 'paused'}.`,
+        };
+      }
+      if (toolUse.name === DELETE_AD_RULE) {
+        await this.rulesService.remove(workspaceId, String(input.rule_id));
+        return { type: 'tool_result', tool_use_id: toolUse.id, content: 'Rule deleted.' };
+      }
+      // Remaining rule tool: list_ad_rules.
+      const rules = await this.rulesService.list(workspaceId);
+      return {
+        type: 'tool_result',
+        tool_use_id: toolUse.id,
+        content: JSON.stringify(
+          rules.map((rule) => ({
+            id: rule.id,
+            name: rule.name,
+            adAccountId: rule.adAccountId,
+            scope: rule.scope,
+            metric: rule.metric,
+            comparator: rule.comparator,
+            threshold: rule.threshold,
+            windowDays: rule.windowDays,
+            action: rule.action,
+            scalePct: rule.scalePct,
+            autoExecute: rule.autoExecute,
+            guardrails: {
+              maxScalePct: rule.maxScalePct,
+              maxActionsPerRun: rule.maxActionsPerRun,
+              dailyActionCap: rule.dailyActionCap,
+            },
+            cronExpression: rule.cronExpression,
+            timezone: rule.timezone,
+            isActive: rule.isActive,
+            lastRun: rule.lastRun ? rule.lastRun.toISOString() : null,
+            nextRun: rule.nextRun ? rule.nextRun.toISOString() : null,
+          })),
+        ),
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Rule tool ${toolUse.name} failed: ${message}`);
+      return {
+        type: 'tool_result',
+        tool_use_id: toolUse.id,
+        content: `Rule operation failed: ${message}`,
+        is_error: true,
+      };
+    }
   }
 
   /**

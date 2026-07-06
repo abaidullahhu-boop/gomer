@@ -13,6 +13,7 @@ import { DatabaseModule } from './database/database.module';
 import { HealthModule } from './health/health.module';
 import { IntegrationsModule } from './integrations/integrations.module';
 import { RedisModule } from './redis/redis.module';
+import { RulesSchedulerModule } from './rules/rules-scheduler.module';
 import { SkillsModule } from './skills/skills.module';
 import { SlackModule } from './slack/slack.module';
 import { SpacesModule } from './spaces/spaces.module';
@@ -41,6 +42,7 @@ import { WorkspacesModule } from './workspaces/workspaces.module';
     TasksModule,
     AiModule,
     SlackModule,
+    RulesSchedulerModule,
     UsageModule,
     HealthModule,
   ],
