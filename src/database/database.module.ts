@@ -28,6 +28,9 @@ import { subscribers } from './subscribers';
           username: db.user,
           password: db.password,
           database: db.name,
+          // Managed Postgres (e.g. DigitalOcean) terminates TLS; accept its
+          // server cert without CA pinning.
+          ssl: db.ssl ? { rejectUnauthorized: false } : false,
           entities,
           subscribers,
           migrations: [__dirname + '/migrations/*{.ts,.js}'],

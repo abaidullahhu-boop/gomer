@@ -1,3 +1,4 @@
+import 'reflect-metadata';
 import 'dotenv/config';
 import { DataSource, DataSourceOptions } from 'typeorm';
 import { entities } from './entities';
@@ -15,6 +16,8 @@ export const dataSourceOptions: DataSourceOptions = {
   username: process.env.DATABASE_USER ?? 'postgres',
   password: process.env.DATABASE_PASSWORD ?? 'password',
   database: process.env.DATABASE_NAME ?? 'gomer',
+  // Managed Postgres (e.g. DigitalOcean) requires TLS; accept its server cert.
+  ssl: process.env.DATABASE_SSL === 'true' ? { rejectUnauthorized: false } : false,
   entities,
   migrations: [__dirname + '/migrations/*{.ts,.js}'],
   synchronize: false,

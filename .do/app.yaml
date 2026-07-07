@@ -1,0 +1,142 @@
+# DigitalOcean App Platform spec for gomer.ai backend.
+#
+# Create the app from this spec with either:
+#   doctl apps create --spec .do/app.yaml
+# or by importing the GitHub repo in the DO dashboard (it auto-detects this file).
+#
+# SECRET values below are placeholders — set the real values in the DO dashboard
+# (App → Settings → Environment Variables). Never commit real secrets here.
+name: gomer-backend
+region: nyc
+
+# Dockerfile-built API service.
+services:
+  - name: api
+    dockerfile_path: Dockerfile
+    source_dir: /
+    github:
+      repo: abaidullahhu-boop/gomer
+      branch: main
+      deploy_on_push: true
+    http_port: 3000
+    instance_count: 1
+    instance_size_slug: apps-s-1vcpu-1gb
+    health_check:
+      http_path: /health
+      initial_delay_seconds: 20
+    envs:
+      - key: NODE_ENV
+        scope: RUN_TIME
+        value: production
+      - key: PORT
+        scope: RUN_TIME
+        value: "3000"
+      # Bound automatically from the managed databases declared below.
+      - key: DATABASE_URL
+        scope: RUN_TIME
+        value: ${gomer-db.DATABASE_URL}
+      - key: DATABASE_SSL
+        scope: RUN_TIME
+        value: "true"
+      - key: REDIS_URL
+        scope: RUN_TIME
+        value: ${gomer-redis.DATABASE_URL}
+      # Public URL of this app; drives CORS + OAuth callbacks.
+      - key: FRONTEND_URL
+        scope: RUN_TIME
+        value: ${APP_URL}
+      - key: SLACK_REDIRECT_URI
+        scope: RUN_TIME
+        value: ${APP_URL}/auth/slack/callback
+      - key: META_REDIRECT_URI
+        scope: RUN_TIME
+        value: ${APP_URL}/integrations/meta/callback
+      # ---- Secrets: replace the placeholder values in the DO dashboard ----
+      - key: JWT_SECRET
+        scope: RUN_TIME
+        type: SECRET
+        value: set-me-in-dashboard
+      - key: JWT_REFRESH_SECRET
+        scope: RUN_TIME
+        type: SECRET
+        value: set-me-in-dashboard
+      - key: ANTHROPIC_API_KEY
+        scope: RUN_TIME
+        type: SECRET
+        value: set-me-in-dashboard
+      - key: SLACK_CLIENT_ID
+        scope: RUN_TIME
+        type: SECRET
+        value: set-me-in-dashboard
+      - key: SLACK_CLIENT_SECRET
+        scope: RUN_TIME
+        type: SECRET
+        value: set-me-in-dashboard
+      - key: SLACK_SIGNING_SECRET
+        scope: RUN_TIME
+        type: SECRET
+        value: set-me-in-dashboard
+      - key: PIPEDREAM_CLIENT_ID
+        scope: RUN_TIME
+        type: SECRET
+        value: set-me-in-dashboard
+      - key: PIPEDREAM_CLIENT_SECRET
+        scope: RUN_TIME
+        type: SECRET
+        value: set-me-in-dashboard
+      - key: PIPEDREAM_PROJECT_ID
+        scope: RUN_TIME
+        type: SECRET
+        value: set-me-in-dashboard
+      - key: META_OAUTH_CLIENT_ID
+        scope: RUN_TIME
+        type: SECRET
+        value: set-me-in-dashboard
+      - key: META_OAUTH_CLIENT_SECRET
+        scope: RUN_TIME
+        type: SECRET
+        value: set-me-in-dashboard
+      - key: STRIPE_SECRET_KEY
+        scope: RUN_TIME
+        type: SECRET
+        value: set-me-in-dashboard
+      - key: STRIPE_WEBHOOK_SECRET
+        scope: RUN_TIME
+        type: SECRET
+        value: set-me-in-dashboard
+
+# Runs schema migrations before each deploy goes live.
+jobs:
+  - name: migrate
+    kind: PRE_DEPLOY
+    dockerfile_path: Dockerfile
+    source_dir: /
+    github:
+      repo: abaidullahhu-boop/gomer
+      branch: main
+    run_command: npm run migration:run:prod
+    instance_count: 1
+    instance_size_slug: apps-s-1vcpu-1gb
+    envs:
+      - key: NODE_ENV
+        scope: RUN_TIME
+        value: production
+      - key: DATABASE_URL
+        scope: RUN_TIME
+        value: ${gomer-db.DATABASE_URL}
+      - key: DATABASE_SSL
+        scope: RUN_TIME
+        value: "true"
+
+# Managed data stores. Postgres runs as a dev database; Redis/Valkey has no dev
+# tier so it attaches as a managed cluster (adjust engine to VALKEY if REDIS is
+# rejected on validation).
+databases:
+  - name: gomer-db
+    engine: PG
+    version: "16"
+    production: false
+  - name: gomer-redis
+    engine: REDIS
+    version: "7"
+    production: true

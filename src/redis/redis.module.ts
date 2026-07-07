@@ -18,6 +18,14 @@ import { AppConfig } from '../config/configuration';
       inject: [ConfigService],
       useFactory: (configService: ConfigService<AppConfig, true>): Redis => {
         const redis = configService.get('redis', { infer: true });
+        // A full URL (e.g. rediss://...) carries auth + TLS for managed Redis
+        // and takes precedence over discrete host/port for local dev.
+        if (redis.url) {
+          return new Redis(redis.url, {
+            lazyConnect: false,
+            maxRetriesPerRequest: null,
+          });
+        }
         return new Redis({
           host: redis.host,
           port: redis.port,
