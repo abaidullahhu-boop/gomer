@@ -134,7 +134,7 @@ jobs:
 databases:
   - name: gomer-db
     engine: PG
-    version: "16"
+    version: "17"
     production: false
   - name: gomer-redis
     engine: REDIS
