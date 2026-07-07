@@ -467,6 +467,20 @@ export class IntegrationsService {
   }
 
   /**
+   * Every workspace that has at least one active Meta connection — the sweep
+   * list for proactive monitoring (anomaly alerts), which runs without a user.
+   */
+  async listActiveMetaWorkspaceIds(): Promise<string[]> {
+    const rows = await this.integrationRepository
+      .createQueryBuilder('integration')
+      .select('DISTINCT integration.workspaceId', 'workspaceId')
+      .where('integration.provider = :provider', { provider: 'meta' })
+      .andWhere('integration.isActive = true')
+      .getRawMany<{ workspaceId: string }>();
+    return rows.map((row) => row.workspaceId);
+  }
+
+  /**
    * Resolve a valid Meta access token for the member's run — the freshest token
    * of the first visible active Meta account. Used by the native Meta Ads tools,
    * which call the Marketing API directly (Meta's hosted MCP is allowlist-gated

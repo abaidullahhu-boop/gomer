@@ -55,6 +55,9 @@ import { GET_WORKSPACE_STATS, WORKSPACE_TOOLS } from './workspace-tools';
 /** Beta flag enabling the remote MCP connector on the Messages API. */
 const MCP_BETA = 'mcp-client-2025-11-20';
 
+/** Balance (in credits; 1 credit = $0.01) under which replies carry a top-up nudge. */
+const LOW_BALANCE_CREDITS = 1000;
+
 /**
  * Local (custom) tools AiService executes itself: building/updating Spaces and
  * reading workspace facts. Sent on every run alongside any connected-app MCP
@@ -206,6 +209,23 @@ export class AiService {
     const confirmVia: ConfirmMode = options.confirmVia ?? 'inline';
     const ai = this.configService.get('ai', { infer: true });
     const model = options.model ?? ai.model;
+
+    // Credit gate: an exhausted workspace gets a pointer to the top-up page
+    // instead of a model call. Checked before anything is spent.
+    const billingUrl = `${this.configService.get('app', { infer: true }).frontendUrl}/dashboard/billing`;
+    const creditBalance = await this.usageService.getBalance(workspaceId);
+    if (creditBalance.balance <= 0) {
+      return {
+        answer:
+          `This workspace is out of credits, so I can't run that request. ` +
+          `Top up at <${billingUrl}|${billingUrl}> and I'll pick right back up.`,
+        connectedApps: [],
+        actions: [],
+        spaces: [],
+        pendingAction: null,
+      };
+    }
+
     const client = this.getClient();
 
     // Only the accounts this member may use become tools: every team account
@@ -309,7 +329,10 @@ export class AiService {
         'Pause/scale rules act autonomously within guardrails and report to Slack afterwards, so ' +
         'ALWAYS describe the full rule (metric, threshold, window, action, schedule, guardrails) and ' +
         'get explicit confirmation before creating one. Use remembered targets (e.g. target_roas) as ' +
-        'sensible defaults. Manage rules with list_ad_rules, set_ad_rule_active, and delete_ad_rule.';
+        'sensible defaults. Manage rules with list_ad_rules, set_ad_rule_active, and delete_ad_rule. ' +
+        'Separately, an automatic hourly monitor alerts on CPA spikes, ROAS drops, and spend spikes ' +
+        '(vs the trailing 7 days) once the workspace has an "alerts_channel" fact — if the user asks ' +
+        'for automatic alerts, ask which channel and remember_fact its channel ID as alerts_channel.';
     }
     // In button mode the platform gates Meta Ads writes with an out-of-band
     // approval, so the model must actually CALL the write tool (not ask in
@@ -434,6 +457,14 @@ export class AiService {
       taskId: options.taskId ?? null,
       sourceName: options.sourceName,
     });
+
+    // Low-balance nudge: piggybacks on the answer once the workspace is under
+    // $10 of credits, so the user hears about it before the hard stop above.
+    if (answer.trim() && creditBalance.balance < LOW_BALANCE_CREDITS) {
+      answer +=
+        `\n\n_Heads up: this workspace has about $${(creditBalance.balance / 100).toFixed(2)} ` +
+        `of credits left. Top up at <${billingUrl}|${billingUrl}>._`;
+    }
 
     return {
       answer: answer.trim(),

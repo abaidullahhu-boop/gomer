@@ -2,8 +2,10 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { APP_FILTER, APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { ScheduleModule } from '@nestjs/schedule';
+import { AdminModule } from './admin/admin.module';
 import { AiModule } from './ai/ai.module';
 import { AuthModule } from './auth/auth.module';
+import { BillingModule } from './billing/billing.module';
 import { AllExceptionsFilter } from './common/filters';
 import { JwtAuthGuard, RolesGuard } from './common/guards';
 import { LoggingInterceptor } from './common/interceptors';
@@ -12,6 +14,7 @@ import { validateEnv } from './config/env.validation';
 import { DatabaseModule } from './database/database.module';
 import { HealthModule } from './health/health.module';
 import { IntegrationsModule } from './integrations/integrations.module';
+import { MonitoringSchedulerModule } from './monitoring/monitoring-scheduler.module';
 import { RedisModule } from './redis/redis.module';
 import { RulesSchedulerModule } from './rules/rules-scheduler.module';
 import { SkillsModule } from './skills/skills.module';
@@ -43,7 +46,10 @@ import { WorkspacesModule } from './workspaces/workspaces.module';
     AiModule,
     SlackModule,
     RulesSchedulerModule,
+    MonitoringSchedulerModule,
     UsageModule,
+    BillingModule,
+    AdminModule,
     HealthModule,
   ],
   providers: [

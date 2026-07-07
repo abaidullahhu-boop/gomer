@@ -15,10 +15,14 @@ export interface AppConfig {
     user: string;
     password: string;
     url: string;
+    /** Enable TLS for the connection (required by managed Postgres, e.g. DigitalOcean). */
+    ssl: boolean;
   };
   redis: {
     host: string;
     port: number;
+    /** Full connection URL (e.g. rediss://...). Takes precedence over host/port when set. */
+    url: string;
   };
   jwt: {
     secret: string;
@@ -58,6 +62,12 @@ export interface AppConfig {
     anthropicApiKey: string;
     model: string;
   };
+  billing: {
+    /** The platform's own Stripe secret key (top-ups) — NOT a customer's. */
+    stripeSecretKey: string;
+    /** Signing secret of the Stripe webhook endpoint. */
+    stripeWebhookSecret: string;
+  };
 }
 
 export const configuration = (): AppConfig => ({
@@ -73,10 +83,12 @@ export const configuration = (): AppConfig => ({
     user: process.env.DATABASE_USER ?? 'postgres',
     password: process.env.DATABASE_PASSWORD ?? 'password',
     url: process.env.DATABASE_URL ?? 'postgresql://postgres:password@localhost:5432/gomer',
+    ssl: process.env.DATABASE_SSL === 'true',
   },
   redis: {
     host: process.env.REDIS_HOST ?? 'localhost',
     port: parseInt(process.env.REDIS_PORT ?? '6379', 10),
+    url: process.env.REDIS_URL ?? '',
   },
   jwt: {
     secret: process.env.JWT_SECRET ?? 'super-secret-key',
@@ -110,5 +122,9 @@ export const configuration = (): AppConfig => ({
   ai: {
     anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? '',
     model: process.env.AI_MODEL ?? 'claude-opus-4-8',
+  },
+  billing: {
+    stripeSecretKey: process.env.STRIPE_SECRET_KEY ?? '',
+    stripeWebhookSecret: process.env.STRIPE_WEBHOOK_SECRET ?? '',
   },
 });

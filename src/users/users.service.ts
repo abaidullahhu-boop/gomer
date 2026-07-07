@@ -75,6 +75,51 @@ export class UsersService {
     });
   }
 
+  /** Every member of a workspace including deactivated ones — the admin roster. */
+  listAllByWorkspace(workspaceId: string): Promise<User[]> {
+    return this.userRepository.find({
+      where: { workspaceId },
+      order: { createdAt: 'ASC' },
+    });
+  }
+
+  /**
+   * Activate or deactivate a member. Admin-only (enforced at the controller);
+   * refuses to deactivate the caller themselves or the last active admin, so a
+   * workspace can never lock itself out.
+   */
+  async setActive(
+    workspaceId: string,
+    callerUserId: string,
+    targetUserId: string,
+    isActive: boolean,
+  ): Promise<User> {
+    const target = await this.userRepository.findOne({
+      where: { id: targetUserId, workspaceId },
+    });
+    if (!target) {
+      throw new NotFoundException(`User ${targetUserId} not found in this workspace`);
+    }
+    if (target.isActive === isActive) return target;
+
+    if (!isActive) {
+      if (targetUserId === callerUserId) {
+        throw new BadRequestException('You cannot deactivate your own account');
+      }
+      if (target.role === UserRole.ADMIN) {
+        const otherAdmins = await this.userRepository.count({
+          where: { workspaceId, role: UserRole.ADMIN, isActive: true, id: Not(targetUserId) },
+        });
+        if (otherAdmins === 0) {
+          throw new BadRequestException('A workspace must have at least one active admin');
+        }
+      }
+    }
+
+    target.isActive = isActive;
+    return this.userRepository.save(target);
+  }
+
   /**
    * Changes a member's role within a workspace. Only callable by an admin (enforced
    * at the controller). Refuses to demote the workspace's last remaining admin so a

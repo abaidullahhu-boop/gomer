@@ -1,7 +1,7 @@
 import { Controller, Get } from '@nestjs/common';
 import { CurrentUser } from '../common/decorators';
 import { CreditEvent } from '../database/entities';
-import { UsageService, UsageSummary } from './usage.service';
+import { CreditBalance, UsageService, UsageSummary } from './usage.service';
 import { ApiTags } from '@nestjs/swagger';
 
 @ApiTags('usage')
@@ -13,6 +13,12 @@ export class UsageController {
   @Get('summary')
   summary(@CurrentUser('workspaceId') workspaceId: string): Promise<UsageSummary> {
     return this.usageService.summarizeForWorkspace(workspaceId);
+  }
+
+  /** The workspace's credit position: granted, used, and remaining. */
+  @Get('balance')
+  balance(@CurrentUser('workspaceId') workspaceId: string): Promise<CreditBalance> {
+    return this.usageService.getBalance(workspaceId);
   }
 
   /** Recent credit events for the current workspace. */

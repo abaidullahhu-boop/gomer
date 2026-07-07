@@ -1,7 +1,8 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Workspace } from '../database/entities';
+import { UsageService } from '../usage/usage.service';
 
 export interface UpsertWorkspaceFromSlackInput {
   slackTeamId: string;
@@ -11,9 +12,12 @@ export interface UpsertWorkspaceFromSlackInput {
 
 @Injectable()
 export class WorkspacesService {
+  private readonly logger = new Logger(WorkspacesService.name);
+
   constructor(
     @InjectRepository(Workspace)
     private readonly workspaceRepository: Repository<Workspace>,
+    private readonly usageService: UsageService,
   ) {}
 
   findById(id: string): Promise<Workspace | null> {
@@ -54,6 +58,15 @@ export class WorkspacesService {
       credits: 0,
     });
 
-    return this.workspaceRepository.save(workspace);
+    const saved = await this.workspaceRepository.save(workspace);
+    // Free onboarding credits, best-effort: a grant failure must not block the
+    // Slack install. Idempotent, so a retried install can't double-grant.
+    try {
+      await this.usageService.grantOnboardingCredits(saved.id);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Failed to grant onboarding credits for ${saved.id}: ${message}`);
+    }
+    return saved;
   }
 }
