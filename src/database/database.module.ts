@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { AppConfig } from '../config/configuration';
+import { stripSslMode } from './database-url';
 import { entities } from './entities';
 import { subscribers } from './subscribers';
 
@@ -22,7 +23,7 @@ import { subscribers } from './subscribers';
         const db = configService.get('database', { infer: true });
         return {
           type: 'postgres',
-          url: db.url,
+          url: stripSslMode(db.url),
           host: db.host,
           port: db.port,
           username: db.user,

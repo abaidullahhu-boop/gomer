@@ -1,6 +1,7 @@
 import 'reflect-metadata';
 import 'dotenv/config';
 import { DataSource, DataSourceOptions } from 'typeorm';
+import { stripSslMode } from './database-url';
 import { entities } from './entities';
 
 /**
@@ -10,7 +11,7 @@ import { entities } from './entities';
  */
 export const dataSourceOptions: DataSourceOptions = {
   type: 'postgres',
-  url: process.env.DATABASE_URL,
+  url: stripSslMode(process.env.DATABASE_URL),
   host: process.env.DATABASE_HOST ?? 'localhost',
   port: parseInt(process.env.DATABASE_PORT ?? '5432', 10),
   username: process.env.DATABASE_USER ?? 'postgres',
