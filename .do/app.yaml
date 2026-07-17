@@ -1,4 +1,4 @@
-# DigitalOcean App Platform spec for gomer.ai backend.
+# DigitalOcean App Platform spec for gomer.ai (API + SPA frontend).
 #
 # Create the app from this spec with either:
 #   doctl apps create --spec .do/app.yaml
@@ -6,7 +6,10 @@
 #
 # SECRET values below are placeholders — set the real values in the DO dashboard
 # (App → Settings → Environment Variables). Never commit real secrets here.
-name: gomer-backend
+#
+# The API and the frontend share one domain: the API is routed under /api and
+# the SPA serves everything else, so browser calls are same-origin (no CORS).
+name: gomer
 region: nyc
 
 # Dockerfile-built API service.
@@ -21,6 +24,10 @@ services:
     http_port: 3000
     instance_count: 1
     instance_size_slug: apps-s-1vcpu-1gb
+    # Served under /api; App Platform strips this prefix before forwarding,
+    # so the Nest routes stay unprefixed (/health, /auth/..., etc.).
+    routes:
+      - path: /api
     health_check:
       http_path: /health
       initial_delay_seconds: 20
@@ -41,16 +48,20 @@ services:
       - key: REDIS_URL
         scope: RUN_TIME
         value: ${gomer-redis.DATABASE_URL}
-      # Public URL of this app; drives CORS + OAuth callbacks.
+      # The SPA is served from this same domain, so the app's own URL is the
+      # correct CORS origin.
       - key: FRONTEND_URL
         scope: RUN_TIME
         value: ${APP_URL}
+      # OAuth callbacks must include the /api prefix the API is routed under.
+      # These exact URLs have to be registered in the Slack and Meta app
+      # dashboards, or consent will redirect to a 404.
       - key: SLACK_REDIRECT_URI
         scope: RUN_TIME
-        value: ${APP_URL}/auth/slack/callback
+        value: ${APP_URL}/api/auth/slack/callback
       - key: META_REDIRECT_URI
         scope: RUN_TIME
-        value: ${APP_URL}/integrations/meta/callback
+        value: ${APP_URL}/api/integrations/meta/callback
       # ---- Secrets: replace the placeholder values in the DO dashboard ----
       - key: JWT_SECRET
         scope: RUN_TIME
@@ -96,14 +107,42 @@ services:
         scope: RUN_TIME
         type: SECRET
         value: set-me-in-dashboard
+      # Billing is not enabled for this deploy. The app boots fine without
+      # these (they default to empty), but billing/top-up endpoints and the
+      # Stripe webhook will fail until real keys are set in the dashboard.
       - key: STRIPE_SECRET_KEY
         scope: RUN_TIME
         type: SECRET
-        value: set-me-in-dashboard
+        value: ""
       - key: STRIPE_WEBHOOK_SECRET
         scope: RUN_TIME
         type: SECRET
-        value: set-me-in-dashboard
+        value: ""
+
+# Vite/React SPA. Catches every path not claimed by the /api route above.
+static_sites:
+  - name: web
+    source_dir: /
+    github:
+      repo: abaidullahhu-boop/gomer.ai-FE
+      branch: main
+      deploy_on_push: true
+    build_command: npm run build
+    output_dir: dist
+    routes:
+      - path: /
+    # Rewrites unknown paths to index.html so client-side routing works on
+    # deep links / refresh (equivalent to the vercel.json rewrite).
+    catchall_document: index.html
+    envs:
+      # Vite inlines import.meta.env at build time, so this must be BUILD_TIME.
+      # Same-origin: the SPA calls the API under /api on its own domain.
+      - key: VITE_API_URL
+        scope: BUILD_TIME
+        value: ${APP_URL}/api
+      - key: VITE_PIPEDREAM_ENVIRONMENT
+        scope: BUILD_TIME
+        value: production
 
 # Runs schema migrations before each deploy goes live.
 jobs:
