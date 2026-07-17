@@ -48,6 +48,17 @@ services:
       - key: REDIS_URL
         scope: RUN_TIME
         value: ${gomer-redis.DATABASE_URL}
+      # Must match the SPA's VITE_PIPEDREAM_ENVIRONMENT below: Pipedream scopes
+      # connect tokens per environment, so a token minted here is rejected by a
+      # popup opened in a different one.
+      #
+      # Set to `development` so Connect uses Pipedream's shared OAuth apps.
+      # Moving to `production` additionally requires our own OAuth client per
+      # provider (e.g. a Google Cloud client for Gmail) registered in Pipedream
+      # — switch both sides together once those exist.
+      - key: PIPEDREAM_ENVIRONMENT
+        scope: RUN_TIME
+        value: development
       # The SPA is served from this same domain, so the app's own URL is the
       # correct CORS origin.
       - key: FRONTEND_URL
@@ -140,9 +151,10 @@ static_sites:
       - key: VITE_API_URL
         scope: BUILD_TIME
         value: ${APP_URL}/api
+      # Must match the api service's PIPEDREAM_ENVIRONMENT above.
       - key: VITE_PIPEDREAM_ENVIRONMENT
         scope: BUILD_TIME
-        value: production
+        value: development
 
 # Runs schema migrations before each deploy goes live.
 jobs:
