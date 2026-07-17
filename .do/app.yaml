@@ -167,15 +167,28 @@ jobs:
         scope: RUN_TIME
         value: "true"
 
-# Managed data stores. Postgres runs as a dev database; Redis/Valkey has no dev
-# tier so it attaches as a managed cluster (adjust engine to VALKEY if REDIS is
-# rejected on validation).
+# Managed data stores.
+#
+# Postgres is a dev database, created and managed by App Platform itself.
+#
+# The cache runs on Valkey 8: REDIS is no longer an engine DigitalOcean offers
+# (`doctl databases options engines` lists valkey only). Valkey is a
+# wire-compatible fork of Redis, so ioredis and REDIS_URL work unchanged.
+# Valkey has no dev tier, so it must be a production cluster created outside
+# this spec and attached here by name:
+#
+#   doctl databases create gomer-valkey --engine valkey --version 8 \
+#     --size db-s-1vcpu-1gb --region nyc3 --num-nodes 1
+#
+# It bills separately (~$15/mo) and is NOT torn down with the app — delete it
+# explicitly with `doctl databases delete gomer-valkey`.
 databases:
   - name: gomer-db
     engine: PG
     version: "17"
     production: false
   - name: gomer-redis
-    engine: REDIS
-    version: "7"
+    engine: VALKEY
+    version: "8"
     production: true
+    cluster_name: gomer-valkey
