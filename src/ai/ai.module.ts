@@ -11,6 +11,7 @@ import { AiService } from './ai.service';
 import { AnthropicProvider } from './providers/anthropic.provider';
 import { GatewayProvider } from './providers/gateway.provider';
 import { McpBridgeService } from './providers/mcp-bridge.service';
+import { ToolRouterService } from './providers/tool-router.service';
 
 @Module({
   imports: [
@@ -23,7 +24,7 @@ import { McpBridgeService } from './providers/mcp-bridge.service';
     WorkspacesModule,
   ],
   controllers: [AiController],
-  providers: [AiService, AnthropicProvider, GatewayProvider, McpBridgeService],
+  providers: [AiService, AnthropicProvider, GatewayProvider, McpBridgeService, ToolRouterService],
   exports: [AiService],
 })
 export class AiModule {}

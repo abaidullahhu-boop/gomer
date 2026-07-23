@@ -4,7 +4,12 @@ import { AppConfig } from '../config/configuration';
 import { PERSONALITY_INSTRUCTIONS } from './personality';
 import { AnthropicProvider } from './providers/anthropic.provider';
 import { GatewayProvider } from './providers/gateway.provider';
-import { BridgedToolset, McpBridgeService } from './providers/mcp-bridge.service';
+import {
+  BridgedToolset,
+  MAX_BRIDGED_TOOLS,
+  McpBridgeService,
+} from './providers/mcp-bridge.service';
+import { ToolRouterService } from './providers/tool-router.service';
 import { buildCatalog, ModelDefinition } from './providers/model-catalog';
 import {
   LlmProvider,
@@ -186,6 +191,7 @@ export class AiService {
     private readonly anthropicProvider: AnthropicProvider,
     private readonly gatewayProvider: GatewayProvider,
     private readonly mcpBridge: McpBridgeService,
+    private readonly toolRouter: ToolRouterService,
     private readonly workspacesService: WorkspacesService,
   ) {}
 
@@ -433,13 +439,31 @@ export class AiService {
       ? null
       : await this.mcpBridge.buildToolset(servers);
     let mcpServers: RemoteMcpServer[] = model.supportsRemoteMcp ? servers : [];
-    let tools: ToolSpec[] = [...localTools, ...(bridged?.tools ?? [])];
 
     // Which apps this run can actually use. Bridging resolves that precisely
     // (an unreachable server drops out); server-side MCP only finds out on use.
+    // Read before routing narrows the toolset: routing changes which tools this
+    // message is sent, not which apps the workspace has connected.
     const reachableApps = model.supportsRemoteMcp
       ? servers.map((server) => server.appSlug)
       : (bridged?.apps ?? []);
+
+    // Send only the tools this message plausibly needs. Every schema rides on
+    // every turn, so a workspace with many connected apps otherwise spends tens
+    // of thousands of tokens per call describing tools it will never touch. The
+    // router judges from tool names and short descriptions; a null result — too
+    // few tools to bother, or any failure — falls back to the app-fair cap, so
+    // routing can trim the bill but never break a run.
+    if (bridged) {
+      const relevant = await this.toolRouter.selectRelevant(
+        provider,
+        model.id,
+        prompt,
+        bridged.tools,
+      );
+      bridged = bridged.narrowTo(relevant ?? bridged.tools, MAX_BRIDGED_TOOLS);
+    }
+    let tools: ToolSpec[] = [...localTools, ...(bridged?.tools ?? [])];
     appSlugs = [...new Set([...reachableApps, ...(hasMeta ? ['meta_ads'] : [])])];
     // Whether connected apps were available for this run; on an MCP failure the
     // Pipedream toolsets drop but the Meta local tools survive.
