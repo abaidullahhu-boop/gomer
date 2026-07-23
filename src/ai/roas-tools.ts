@@ -1,4 +1,4 @@
-import type Anthropic from '@anthropic-ai/sdk';
+import type { ToolSpec } from './providers/provider.interface';
 
 /**
  * Local (client-side) tools for verified ROAS, executed by AiService against
@@ -11,8 +11,7 @@ import type Anthropic from '@anthropic-ai/sdk';
 export const VERIFY_ROAS = 'verify_roas';
 export const LIST_ROAS_SNAPSHOTS = 'list_roas_snapshots';
 
-const VERIFY_ROAS_TOOL: Anthropic.Beta.BetaToolUnion = {
-  type: 'custom',
+const VERIFY_ROAS_TOOL: ToolSpec = {
   name: VERIFY_ROAS,
   description:
     'Compute VERIFIED ROAS/CPA for a window: Meta-reported ad spend paired with ACTUAL Stripe ' +
@@ -23,7 +22,7 @@ const VERIFY_ROAS_TOOL: Anthropic.Beta.BetaToolUnion = {
     'user, especially that revenue is blended (all Stripe revenue in the window, not only ' +
     "ad-attributed). Compare the verified ROAS against the workspace's remembered target when " +
     'one exists. Returns JSON.',
-  input_schema: {
+  parameters: {
     type: 'object',
     properties: {
       ad_account_id: {
@@ -43,15 +42,14 @@ const VERIFY_ROAS_TOOL: Anthropic.Beta.BetaToolUnion = {
   },
 };
 
-const LIST_ROAS_SNAPSHOTS_TOOL: Anthropic.Beta.BetaToolUnion = {
-  type: 'custom',
+const LIST_ROAS_SNAPSHOTS_TOOL: ToolSpec = {
   name: LIST_ROAS_SNAPSHOTS,
   description:
     'List previously computed verified-ROAS snapshots for this workspace (newest first): the ' +
     'window, Meta spend, Stripe net revenue, verified ROAS/CPA, and purchases of each past ' +
     'verify_roas run. Use for trend questions ("is our real ROAS improving?") or to export a ' +
     'history (e.g. to Google Sheets) without recomputing. Returns JSON.',
-  input_schema: {
+  parameters: {
     type: 'object',
     properties: {
       limit: {
@@ -63,10 +61,7 @@ const LIST_ROAS_SNAPSHOTS_TOOL: Anthropic.Beta.BetaToolUnion = {
 };
 
 /** The ROAS tool set, added only when Meta Ads AND Stripe are both connected. */
-export const ROAS_TOOLS: Anthropic.Beta.BetaToolUnion[] = [
-  VERIFY_ROAS_TOOL,
-  LIST_ROAS_SNAPSHOTS_TOOL,
-];
+export const ROAS_TOOLS: ToolSpec[] = [VERIFY_ROAS_TOOL, LIST_ROAS_SNAPSHOTS_TOOL];
 
 /** Every ROAS tool name, for the AiService dispatcher. */
 export const ROAS_TOOL_NAMES = new Set<string>([VERIFY_ROAS, LIST_ROAS_SNAPSHOTS]);

@@ -5,13 +5,25 @@ import { RulesModule } from '../rules/rules.module';
 import { SpacesModule } from '../spaces/spaces.module';
 import { UsageModule } from '../usage/usage.module';
 import { UsersModule } from '../users/users.module';
+import { WorkspacesModule } from '../workspaces/workspaces.module';
 import { AiController } from './ai.controller';
 import { AiService } from './ai.service';
+import { AnthropicProvider } from './providers/anthropic.provider';
+import { GatewayProvider } from './providers/gateway.provider';
+import { McpBridgeService } from './providers/mcp-bridge.service';
 
 @Module({
-  imports: [IntegrationsModule, MemoryModule, RulesModule, SpacesModule, UsageModule, UsersModule],
+  imports: [
+    IntegrationsModule,
+    MemoryModule,
+    RulesModule,
+    SpacesModule,
+    UsageModule,
+    UsersModule,
+    WorkspacesModule,
+  ],
   controllers: [AiController],
-  providers: [AiService],
+  providers: [AiService, AnthropicProvider, GatewayProvider, McpBridgeService],
   exports: [AiService],
 })
 export class AiModule {}

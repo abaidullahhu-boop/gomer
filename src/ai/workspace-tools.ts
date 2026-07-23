@@ -1,4 +1,4 @@
-import type Anthropic from '@anthropic-ai/sdk';
+import type { ToolSpec } from './providers/provider.interface';
 
 /**
  * Local (client-side) tools that answer questions about the workspace itself,
@@ -10,8 +10,7 @@ import type Anthropic from '@anthropic-ai/sdk';
 /** Tool name, shared between the definition and AiService's dispatcher. */
 export const GET_WORKSPACE_STATS = 'get_workspace_stats';
 
-export const GET_WORKSPACE_STATS_TOOL: Anthropic.Beta.BetaToolUnion = {
-  type: 'custom',
+export const GET_WORKSPACE_STATS_TOOL: ToolSpec = {
   name: GET_WORKSPACE_STATS,
   description:
     'Get a full report of THIS workspace: total members, how many have signed up to Gomer vs not, ' +
@@ -23,7 +22,7 @@ export const GET_WORKSPACE_STATS_TOOL: Anthropic.Beta.BetaToolUnion = {
     'when there are several). Flag any account where active is false as needing attention, note when total ' +
     'members is null (roster unavailable), and offer to help reach members who have not signed up. Returns ' +
     'JSON; if there are no connections, say so plainly.',
-  input_schema: { type: 'object', properties: {} },
+  parameters: { type: 'object', properties: {} },
 };
 
 export const WORKSPACE_TOOLS = [GET_WORKSPACE_STATS_TOOL];

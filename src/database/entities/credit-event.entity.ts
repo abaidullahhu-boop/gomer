@@ -40,11 +40,37 @@ export class CreditEvent {
   @Column({ type: 'integer', default: 0 })
   creditsUsed!: number;
 
+  /** Input + output, kept denormalised so analytics reads stay one column. */
   @Column({ type: 'integer', default: 0 })
   tokensUsed!: number;
 
+  /** Billed at the model's input rate, which is far cheaper than output. */
+  @Column({ type: 'integer', default: 0 })
+  inputTokens!: number;
+
+  @Column({ type: 'integer', default: 0 })
+  outputTokens!: number;
+
   @Column({ type: 'varchar', length: 128 })
   model!: string;
+
+  /**
+   * The model that actually served the run. Router ids like `auto/best-coding`
+   * resolve to a different backend per call, so `model` alone cannot explain
+   * what happened; null when the provider served exactly what was asked for.
+   */
+  @Column({ type: 'varchar', length: 128, nullable: true })
+  resolvedModel!: string | null;
+
+  /**
+   * What the run cost *us* in USD, as opposed to `creditsUsed` which is what the
+   * workspace was charged. Taken from the provider's reported cost when it gives
+   * one, otherwise derived from the model's list price. Free routes record 0,
+   * which is a real cost and not a missing value — hence the default rather than
+   * null.
+   */
+  @Column({ type: 'numeric', precision: 12, scale: 6, default: 0 })
+  providerCostUsd!: string;
 
   @CreateDateColumn({ type: 'timestamptz' })
   createdAt!: Date;

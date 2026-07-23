@@ -10,6 +10,17 @@ export interface UpsertWorkspaceFromSlackInput {
   slackBotToken?: string | null;
 }
 
+/**
+ * The settings an admin controls from the dashboard. Every field is optional:
+ * the settings page saves each section independently, so a request carries only
+ * what changed. `null` clears a value; omitting it leaves it alone.
+ */
+export interface UpdateWorkspaceSettingsInput {
+  defaultModel?: string | null;
+  personalityTone?: string | null;
+  workspaceInstructions?: string | null;
+}
+
 @Injectable()
 export class WorkspacesService {
   private readonly logger = new Logger(WorkspacesService.name);
@@ -34,6 +45,26 @@ export class WorkspacesService {
 
   findBySlackTeamId(slackTeamId: string): Promise<Workspace | null> {
     return this.workspaceRepository.findOne({ where: { slackTeamId } });
+  }
+
+  /**
+   * Apply an admin's settings changes. Only the fields present in the input are
+   * touched, so saving one section cannot wipe another.
+   */
+  async updateSettings(id: string, input: UpdateWorkspaceSettingsInput): Promise<Workspace> {
+    const workspace = await this.findByIdOrFail(id);
+    if (input.defaultModel !== undefined) {
+      workspace.defaultModel = input.defaultModel;
+    }
+    if (input.personalityTone !== undefined) {
+      workspace.personalityTone = input.personalityTone;
+    }
+    if (input.workspaceInstructions !== undefined) {
+      // Empty text and "unset" are the same thing to the prompt builder; store
+      // null so the column doesn't accumulate blank strings.
+      workspace.workspaceInstructions = input.workspaceInstructions?.trim() || null;
+    }
+    return this.workspaceRepository.save(workspace);
   }
 
   /**

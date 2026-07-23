@@ -1,4 +1,4 @@
-import type Anthropic from '@anthropic-ai/sdk';
+import type { ToolSpec } from './providers/provider.interface';
 
 /**
  * Local (client-side) tools that let Gomer build Spaces — spec-driven web apps.
@@ -77,25 +77,23 @@ const SPEC_PROPERTIES = {
   },
 } as const;
 
-export const CREATE_SPACE_TOOL: Anthropic.Beta.BetaToolUnion = {
-  type: 'custom',
+export const CREATE_SPACE_TOOL: ToolSpec = {
   name: 'create_space',
   description:
     'Build and deploy a new web app (a "Space") for the workspace from a declarative spec. ' +
     'Use this for CRUD/form/dashboard internal tools (time loggers, trackers, calendars). ' +
     'Returns the live URL. End-user login is always passwordless magic link.',
-  input_schema: {
+  parameters: {
     type: 'object',
     properties: SPEC_PROPERTIES,
     required: ['name', 'entities', 'views', 'auth'],
   },
 };
 
-export const UPDATE_SPACE_TOOL: Anthropic.Beta.BetaToolUnion = {
-  type: 'custom',
+export const UPDATE_SPACE_TOOL: ToolSpec = {
   name: 'update_space',
   description: "Replace an existing Space's spec. Provide the Space slug plus the full new spec.",
-  input_schema: {
+  parameters: {
     type: 'object',
     properties: { slug: { type: 'string' }, ...SPEC_PROPERTIES },
     required: ['slug', 'name', 'entities', 'views', 'auth'],

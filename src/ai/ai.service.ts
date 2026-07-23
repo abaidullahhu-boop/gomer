@@ -1,7 +1,22 @@
-import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import Anthropic from '@anthropic-ai/sdk';
 import { AppConfig } from '../config/configuration';
+import { PERSONALITY_INSTRUCTIONS } from './personality';
+import { AnthropicProvider } from './providers/anthropic.provider';
+import { GatewayProvider } from './providers/gateway.provider';
+import { BridgedToolset, McpBridgeService } from './providers/mcp-bridge.service';
+import { buildCatalog, ModelDefinition } from './providers/model-catalog';
+import {
+  LlmProvider,
+  McpConnectionError,
+  ProviderMessage,
+  ProviderResponse,
+  RemoteMcpServer,
+  ToolCall,
+  ToolResult,
+  ToolSpec,
+} from './providers/provider.interface';
+import { WorkspacesService } from '../workspaces/workspaces.service';
 import { CreditEventType } from '../common/enums';
 import { IntegrationsService } from '../integrations/integrations.service';
 import { MetaAdsService } from '../integrations/meta-ads.service';
@@ -52,9 +67,6 @@ import {
 import { SPACE_TOOLS } from './space-tools';
 import { GET_WORKSPACE_STATS, WORKSPACE_TOOLS } from './workspace-tools';
 
-/** Beta flag enabling the remote MCP connector on the Messages API. */
-const MCP_BETA = 'mcp-client-2025-11-20';
-
 /** Balance (in credits; 1 credit = $0.01) under which replies carry a top-up nudge. */
 const LOW_BALANCE_CREDITS = 1000;
 
@@ -63,11 +75,7 @@ const LOW_BALANCE_CREDITS = 1000;
  * reading workspace facts. Sent on every run alongside any connected-app MCP
  * toolsets, and kept as the sole tools when the MCP connector is dropped.
  */
-const LOCAL_TOOLS: Anthropic.Beta.BetaToolUnion[] = [
-  ...SPACE_TOOLS,
-  ...WORKSPACE_TOOLS,
-  ...MEMORY_TOOLS,
-];
+const LOCAL_TOOLS: ToolSpec[] = [...SPACE_TOOLS, ...WORKSPACE_TOOLS, ...MEMORY_TOOLS];
 
 const SYSTEM_PROMPT = `You are Gomer, an AI assistant for a workspace. You can take actions across the user's connected apps using the available tools. Prefer acting over describing: when a request maps to a tool, use it. When you lack a connected app needed for a request, say so plainly and name the app to connect. Before any action that creates, edits, deletes, or starts spending on a connected app — especially Meta Ads campaigns (creating, activating, changing budgets, or deleting) — state exactly what you will do and get the user's explicit confirmation first; never perform such actions speculatively.
 
@@ -82,6 +90,18 @@ When the user asks what you can do — overall or about a specific connected app
 Your replies are delivered in Slack, so format for Slack's mrkdwn — not Markdown: use *single asterisks* for bold (never **double**, which Slack shows literally), _underscores_ for italics, and a leading "• " for bullets. Don't use # headings or [text](url) links; write links as <https://example.com|label>.
 
 Be brief and lead with the answer. Put the direct response in the first sentence, then add only the detail the request actually needs. Prefer a few short sentences; use a short bulleted list only when giving steps or options. Don't restate the question, stack on caveats, or list the tools you have unless asked.`;
+
+/**
+ * What a local tool executor returns. Keeps the wire shape the executors were
+ * written against so the provider refactor did not have to touch forty return
+ * sites; {@link AiService.run} converts it to a neutral {@link ToolResult} once.
+ */
+interface LocalToolResult {
+  type: 'tool_result';
+  tool_use_id: string;
+  content: string;
+  is_error?: boolean;
+}
 
 /** A tool the model invoked during a run, for surfacing what Gomer did. */
 export interface AiAction {
@@ -140,15 +160,17 @@ const META_WRITE_LABELS: Record<string, string> = {
 };
 
 /**
- * Orchestrates Gomer's model calls. Connected integrations are exposed to
- * Claude as Pipedream remote-MCP servers (one per app), so the model can act on
- * a workspace's apps directly. The client is built lazily so the app boots
- * without an Anthropic key.
+ * Orchestrates Gomer's model calls across every supported provider.
+ *
+ * Connected integrations reach the model one of two ways, depending on which
+ * provider serves the chosen model: Anthropic is handed the Pipedream servers
+ * directly and runs those tools itself, while every other provider gets them as
+ * ordinary function tools resolved by {@link McpBridgeService}. Either way this
+ * service owns the loop, executes the local tools, and audits what ran.
  */
 @Injectable()
 export class AiService {
   private readonly logger = new Logger(AiService.name);
-  private client: Anthropic | null = null;
 
   constructor(
     private readonly configService: ConfigService<AppConfig, true>,
@@ -161,22 +183,46 @@ export class AiService {
     private readonly workspaceMemory: WorkspaceMemoryService,
     private readonly roasService: RoasService,
     private readonly rulesService: RulesService,
+    private readonly anthropicProvider: AnthropicProvider,
+    private readonly gatewayProvider: GatewayProvider,
+    private readonly mcpBridge: McpBridgeService,
+    private readonly workspacesService: WorkspacesService,
   ) {}
 
-  getStatus(): { module: string; ready: boolean; provider: string } {
-    const ai = this.configService.get('ai', { infer: true });
-    return { module: 'ai', ready: Boolean(ai.anthropicApiKey), provider: 'anthropic' };
+  getStatus(): { module: string; ready: boolean; providers: string[] } {
+    const providers = [this.anthropicProvider, this.gatewayProvider].filter((provider) =>
+      provider.isConfigured(),
+    );
+    return {
+      module: 'ai',
+      ready: providers.length > 0,
+      providers: providers.map((provider) => provider.id),
+    };
   }
 
-  private getClient(): Anthropic {
-    if (!this.client) {
-      const ai = this.configService.get('ai', { infer: true });
-      if (!ai.anthropicApiKey) {
-        throw new ServiceUnavailableException('AI is not configured (set ANTHROPIC_API_KEY)');
-      }
-      this.client = new Anthropic({ apiKey: ai.anthropicApiKey });
-    }
-    return this.client;
+  /** Every model this deployment can actually reach, for the settings picker. */
+  listModels(): Array<ModelDefinition & { available: boolean }> {
+    return this.catalog().map((model) => ({
+      ...model,
+      available: model.supportsTools && this.providerFor(model).isConfigured(),
+    }));
+  }
+
+  private catalog(): ModelDefinition[] {
+    return buildCatalog(this.configService.get('ai', { infer: true }).gatewayModels);
+  }
+
+  private providerFor(model: ModelDefinition): LlmProvider {
+    return model.provider === 'anthropic' ? this.anthropicProvider : this.gatewayProvider;
+  }
+
+  /**
+   * Resolve a model id to its catalog entry, falling back to the configured
+   * default when a workspace points at a model that has since been removed.
+   */
+  private resolveModel(modelId: string): ModelDefinition | null {
+    const catalog = this.catalog();
+    return catalog.find((model) => model.id === modelId) ?? null;
   }
 
   /**
@@ -208,11 +254,17 @@ export class AiService {
   ): Promise<AiRunResult> {
     const confirmVia: ConfirmMode = options.confirmVia ?? 'inline';
     const ai = this.configService.get('ai', { infer: true });
-    const model = options.model ?? ai.model;
+    const appUrl = this.configService.get('app', { infer: true }).frontendUrl;
+    const billingUrl = `${appUrl}/dashboard/billing`;
+    const settingsUrl = `${appUrl}/dashboard/settings/general`;
+
+    // A caller-pinned model (a scheduled task) wins over the workspace default,
+    // which in turn wins over the deployment-wide fallback.
+    const workspace = await this.workspacesService.findByIdOrFail(workspaceId);
+    const modelId = options.model ?? workspace.defaultModel ?? ai.model;
 
     // Credit gate: an exhausted workspace gets a pointer to the top-up page
     // instead of a model call. Checked before anything is spent.
-    const billingUrl = `${this.configService.get('app', { infer: true }).frontendUrl}/dashboard/billing`;
     const creditBalance = await this.usageService.getBalance(workspaceId);
     if (creditBalance.balance <= 0) {
       return {
@@ -226,7 +278,22 @@ export class AiService {
       };
     }
 
-    const client = this.getClient();
+    // An unreachable model is a settings problem, not a server fault: say which
+    // model and where to change it rather than throwing a 503 into the chat.
+    const model = this.resolveModel(modelId);
+    if (!model) {
+      return this.configurationProblem(
+        `I'm set to use "${modelId}", which isn't a model I recognise. Pick another one at ` +
+          `<${settingsUrl}|${settingsUrl}>.`,
+      );
+    }
+    const provider = this.providerFor(model);
+    if (!provider.isConfigured()) {
+      return this.configurationProblem(
+        `I'm set to use ${model.name}, but this deployment has no ${model.provider} credentials ` +
+          `configured. Pick a different model at <${settingsUrl}|${settingsUrl}>.`,
+      );
+    }
 
     // Only the accounts this member may use become tools: every team account
     // plus their own private ones. Pipedream apps live under a per-scope external
@@ -258,7 +325,7 @@ export class AiService {
     ];
     // Pipedream shares one access token across its servers.
     const pipedreamToken = pipedreamServers.length ? await this.pipedream.getAccessToken() : null;
-    const servers = pipedreamServers.map((server) => ({
+    const servers: RemoteMcpServer[] = pipedreamServers.map((server) => ({
       appSlug: server.appSlug,
       name: server.name,
       url: server.url,
@@ -273,7 +340,7 @@ export class AiService {
     // Verified ROAS needs both sides: Meta for spend, Stripe for real revenue.
     const hasStripe = pipedreamConnected.some((c) => c.appSlug === 'stripe');
     const hasRoas = hasMeta && hasStripe;
-    const localTools: Anthropic.Beta.BetaToolUnion[] = [
+    const localTools: ToolSpec[] = [
       ...LOCAL_TOOLS,
       ...(hasMeta ? META_ADS_TOOLS : []),
       ...(hasRoas ? ROAS_TOOLS : []),
@@ -281,9 +348,9 @@ export class AiService {
       ...(hasMeta ? RULE_TOOLS : []),
     ];
 
-    let appSlugs = [
-      ...new Set([...servers.map((server) => server.appSlug), ...(hasMeta ? ['meta_ads'] : [])]),
-    ];
+    // The apps this run ended up with, filled in once the toolset is resolved
+    // below and narrowed again if the connectors turn out to be unreachable.
+    let appSlugs: string[] = [];
 
     // Name the connected apps in the system prompt so the model can accurately
     // confirm what's usable right now (e.g. for a "what can you do?" answer)
@@ -302,6 +369,15 @@ export class AiService {
     // a read failure or an empty memory.
     const memoryBlock = await this.workspaceMemory.buildPromptBlock(workspaceId);
     if (memoryBlock) system += `\n\n${memoryBlock}`;
+    // The workspace's own settings come last so they override the defaults above
+    // where they conflict — that is what an admin setting them expects.
+    const toneInstruction = PERSONALITY_INSTRUCTIONS[workspace.personalityTone ?? ''];
+    if (toneInstruction) system += `\n\n${toneInstruction}`;
+    if (workspace.workspaceInstructions?.trim()) {
+      system +=
+        `\n\nWorkspace instructions (set by an admin of this workspace — follow them unless ` +
+        `they conflict with the confirmation rules above):\n${workspace.workspaceInstructions.trim()}`;
+    }
     // Verified-ROAS guidance rides along only when the tools do.
     if (hasRoas) {
       system +=
@@ -347,32 +423,37 @@ export class AiService {
         'then call the one write tool and, in one short line, state exactly what you are about to do.';
     }
 
-    // Connected apps become server-side MCP toolsets; local tools (Spaces,
-    // workspace stats, Meta Ads) we execute ourselves and feed results back.
-    // Both are `let` because a dead MCP server makes Anthropic reject the whole
-    // request, so we drop the connector and retry with only the local tools.
-    let mcpServers = servers.map((server) => ({
-      type: 'url' as const,
-      url: server.url,
-      name: server.name,
-      authorization_token: server.authorizationToken,
-    }));
-    let tools: Anthropic.Beta.BetaToolUnion[] = [
-      ...servers.map((server) => ({
-        type: 'mcp_toolset' as const,
-        mcp_server_name: server.name,
-      })),
-      ...localTools,
-    ];
+    // How connected apps reach the model depends on the provider. Anthropic runs
+    // the MCP servers itself, so it gets them as servers and only our local tools
+    // as tools. Every other provider gets them bridged into ordinary tools.
+    //
+    // Both are `let`: a dead MCP server makes Anthropic reject the whole request,
+    // so we drop the connectors and retry with only the local tools.
+    let bridged: BridgedToolset | null = model.supportsRemoteMcp
+      ? null
+      : await this.mcpBridge.buildToolset(servers);
+    let mcpServers: RemoteMcpServer[] = model.supportsRemoteMcp ? servers : [];
+    let tools: ToolSpec[] = [...localTools, ...(bridged?.tools ?? [])];
+
+    // Which apps this run can actually use. Bridging resolves that precisely
+    // (an unreachable server drops out); server-side MCP only finds out on use.
+    const reachableApps = model.supportsRemoteMcp
+      ? servers.map((server) => server.appSlug)
+      : (bridged?.apps ?? []);
+    appSlugs = [...new Set([...reachableApps, ...(hasMeta ? ['meta_ads'] : [])])];
     // Whether connected apps were available for this run; on an MCP failure the
     // Pipedream toolsets drop but the Meta local tools survive.
-    let appsAvailable = servers.length > 0 || hasMeta;
+    let appsAvailable = reachableApps.length > 0 || hasMeta;
 
     // Prior turns (thread history) replay ahead of the new prompt, giving the
     // model conversation continuity; only final text turns are stored/replayed,
     // never tool_use blocks, so there are no dangling tool-result pairs.
-    const messages: Anthropic.Beta.BetaMessageParam[] = [
-      ...(options.history ?? []).map((turn) => ({ role: turn.role, content: turn.content })),
+    const messages: ProviderMessage[] = [
+      ...(options.history ?? []).map((turn) =>
+        turn.role === 'assistant'
+          ? { role: 'assistant' as const, content: turn.content, toolCalls: [] }
+          : { role: 'user' as const, content: turn.content },
+      ),
       { role: 'user' as const, content: prompt },
     ];
     const actions: AiAction[] = [];
@@ -381,81 +462,100 @@ export class AiService {
     // (rather than executed) so the surface can request approval out of band.
     const pending: { current: AiPendingAction | null } = { current: null };
     let answer = '';
-    let tokensUsed = 0;
+    let inputTokens = 0;
+    let outputTokens = 0;
+    // A run is many provider calls, so cost accumulates like tokens do. Left
+    // undefined unless a provider actually reports one, so that "reported zero"
+    // stays distinguishable from "reported nothing".
+    let costUsd: number | undefined;
+    let resolvedModel: string | undefined;
 
-    // Two reasons to loop: the MCP connector returns `pause_turn` when it hits
-    // its per-turn iteration cap, and a local Spaces tool call returns
-    // `tool_use` — in both cases we re-send the accumulated conversation.
+    // Two reasons to loop: a provider returns `pause` when it hits its own
+    // per-turn iteration cap, and any tool call needs answering — in both cases
+    // we re-send the accumulated conversation.
     for (let i = 0; i < 6; i += 1) {
-      let response: Anthropic.Beta.BetaMessage;
+      const request = {
+        model: model.id,
+        system,
+        messages,
+        tools,
+        mcpServers,
+        capabilities: { adaptiveThinking: model.supportsAdaptiveThinking ?? false },
+      };
+      let response: ProviderResponse;
       try {
-        response = await this.create(client, model, system, messages, mcpServers, tools);
+        response = await provider.create(request);
       } catch (error) {
         // A single unreachable Pipedream MCP server makes Anthropic 400 the whole
         // request, which would otherwise fail even prompts that need no app. Drop
-        // the connector once and retry so the model can still answer locally.
-        if (!mcpServers.length || !this.isMcpConnectionError(error)) throw error;
+        // the connectors once and retry so the model can still answer locally.
+        if (!mcpServers.length || !(error instanceof McpConnectionError)) throw error;
         this.logger.warn(
           'A connected-app MCP server was unreachable; retrying without connected apps',
         );
         mcpServers = [];
+        bridged = null;
         tools = [...localTools];
         appSlugs = hasMeta ? ['meta_ads'] : [];
         appsAvailable = hasMeta;
-        response = await this.create(client, model, system, messages, mcpServers, tools);
+        response = await provider.create({ ...request, tools, mcpServers });
       }
-      tokensUsed += response.usage.input_tokens + response.usage.output_tokens;
-
-      const toolUses: Anthropic.Beta.BetaToolUseBlock[] = [];
-      for (const block of response.content) {
-        if (block.type === 'text') {
-          answer += block.text;
-        } else if (block.type === 'mcp_tool_use') {
-          actions.push({ app: block.server_name, tool: block.name, isError: false });
-        } else if (block.type === 'mcp_tool_result') {
-          const last = actions[actions.length - 1];
-          if (last) last.isError = block.is_error ?? false;
-        } else if (block.type === 'tool_use') {
-          toolUses.push(block);
-        }
+      inputTokens += response.usage.inputTokens;
+      if (response.usage.costUsd !== undefined) {
+        costUsd = (costUsd ?? 0) + response.usage.costUsd;
       }
+      // A router can pick a different backend per turn; the last one that
+      // actually served is the most useful single answer to "what ran?".
+      if (response.usage.resolvedModel) resolvedModel = response.usage.resolvedModel;
+      outputTokens += response.usage.outputTokens;
 
-      if (response.stop_reason === 'tool_use' && toolUses.length) {
-        messages.push({ role: 'assistant', content: response.content });
-        const results: Anthropic.Beta.BetaToolResultBlockParam[] = [];
-        for (const toolUse of toolUses) {
-          const result = await this.runLocalTool(
-            workspaceId,
-            userId,
-            toolUse,
-            spaces,
-            { confirmVia, pending },
-            options.fetchMemberCount,
-          );
-          // Local tools run on our side, so (unlike MCP tools) they produce no
-          // mcp_tool_use block — record the action here for the run's audit.
+      answer += response.text;
+      // Tools the provider ran itself are already complete; ours still need executing.
+      actions.push(...response.remoteActivity);
+
+      if (response.stopReason === 'tool_use' && response.toolCalls.length) {
+        messages.push({
+          role: 'assistant',
+          content: response.text,
+          toolCalls: response.toolCalls,
+          raw: response.raw,
+        });
+        const results: ToolResult[] = [];
+        for (const call of response.toolCalls) {
+          const result = await this.runTool(workspaceId, userId, call, bridged, spaces, {
+            confirmVia,
+            pending,
+            fetchMemberCount: options.fetchMemberCount,
+          });
           actions.push({
-            app: this.localToolApp(toolUse.name),
-            tool: toolUse.name,
-            isError: result.is_error ?? false,
+            app: bridged?.has(call.name) ? bridged.appFor(call.name) : this.localToolApp(call.name),
+            tool: call.name,
+            isError: result.isError,
           });
           results.push(result);
         }
-        messages.push({ role: 'user', content: results });
+        messages.push({ role: 'tool', results });
         continue;
       }
 
-      if (response.stop_reason === 'pause_turn') {
-        messages.push({ role: 'assistant', content: response.content });
+      if (response.stopReason === 'pause') {
+        messages.push({
+          role: 'assistant',
+          content: response.text,
+          toolCalls: [],
+          raw: response.raw,
+        });
         continue;
       }
 
       break;
     }
 
-    await this.recordUsage(workspaceId, userId, model, tokensUsed, {
+    await this.recordUsage(workspaceId, userId, model.id, inputTokens, outputTokens, {
       taskId: options.taskId ?? null,
       sourceName: options.sourceName,
+      providerCostUsd: costUsd,
+      resolvedModel,
     });
 
     // Low-balance nudge: piggybacks on the answer once the workspace is under
@@ -476,9 +576,57 @@ export class AiService {
   }
 
   /**
-   * Route a local (custom) tool call to its executor. These run on our side —
-   * unlike the connected-app MCP tools, which Anthropic executes server-side —
-   * and their results are fed back into the conversation.
+   * A run that cannot start because of how the workspace is configured. Shaped
+   * like a normal answer so the surface renders it as Gomer speaking, rather
+   * than surfacing a server error to the user.
+   */
+  private configurationProblem(answer: string): AiRunResult {
+    this.logger.warn(`Refusing an AI run: ${answer}`);
+    return { answer, connectedApps: [], actions: [], spaces: [], pendingAction: null };
+  }
+
+  /**
+   * Execute one tool the model called and normalise the result.
+   *
+   * A bridged connected-app tool goes back out over MCP; everything else is one
+   * of our own local tools. Only providers without server-side MCP produce the
+   * former — on Anthropic those calls never reach us.
+   */
+  private async runTool(
+    workspaceId: string,
+    userId: string | null,
+    call: ToolCall,
+    bridged: BridgedToolset | null,
+    spaces: AiSpace[],
+    ctx: {
+      confirmVia: ConfirmMode;
+      pending: { current: AiPendingAction | null };
+      fetchMemberCount?: () => Promise<number | null>;
+    },
+  ): Promise<ToolResult> {
+    if (bridged?.has(call.name)) {
+      const result = await bridged.call(call.name, call.input);
+      return { id: call.id, name: call.name, content: result.content, isError: result.isError };
+    }
+    const result = await this.runLocalTool(
+      workspaceId,
+      userId,
+      call,
+      spaces,
+      { confirmVia: ctx.confirmVia, pending: ctx.pending },
+      ctx.fetchMemberCount,
+    );
+    return {
+      id: call.id,
+      name: call.name,
+      content: result.content,
+      isError: result.is_error ?? false,
+    };
+  }
+
+  /**
+   * Route a local (custom) tool call to its executor. These run on our side and
+   * their results are fed back into the conversation.
    */
   /** The app label a local tool's action is attributed to in the run audit. */
   private localToolApp(toolName: string): string {
@@ -493,11 +641,11 @@ export class AiService {
   private runLocalTool(
     workspaceId: string,
     userId: string | null,
-    toolUse: Anthropic.Beta.BetaToolUseBlock,
+    toolUse: ToolCall,
     spaces: AiSpace[],
     ctx: { confirmVia: ConfirmMode; pending: { current: AiPendingAction | null } },
     fetchMemberCount?: () => Promise<number | null>,
-  ): Promise<Anthropic.Beta.BetaToolResultBlockParam> {
+  ): Promise<LocalToolResult> {
     if (toolUse.name === GET_WORKSPACE_STATS) {
       return this.runWorkspaceStatsTool(workspaceId, toolUse, fetchMemberCount);
     }
@@ -525,8 +673,8 @@ export class AiService {
   private async runRuleTool(
     workspaceId: string,
     userId: string | null,
-    toolUse: Anthropic.Beta.BetaToolUseBlock,
-  ): Promise<Anthropic.Beta.BetaToolResultBlockParam> {
+    toolUse: ToolCall,
+  ): Promise<LocalToolResult> {
     const input = (toolUse.input ?? {}) as Record<string, unknown>;
     try {
       if (toolUse.name === CREATE_AD_RULE) {
@@ -624,8 +772,8 @@ export class AiService {
   private async runRoasTool(
     workspaceId: string,
     userId: string | null,
-    toolUse: Anthropic.Beta.BetaToolUseBlock,
-  ): Promise<Anthropic.Beta.BetaToolResultBlockParam> {
+    toolUse: ToolCall,
+  ): Promise<LocalToolResult> {
     const input = (toolUse.input ?? {}) as Record<string, unknown>;
     try {
       if (toolUse.name === VERIFY_ROAS) {
@@ -686,8 +834,8 @@ export class AiService {
   private async runMemoryTool(
     workspaceId: string,
     userId: string | null,
-    toolUse: Anthropic.Beta.BetaToolUseBlock,
-  ): Promise<Anthropic.Beta.BetaToolResultBlockParam> {
+    toolUse: ToolCall,
+  ): Promise<LocalToolResult> {
     const input = (toolUse.input ?? {}) as Record<string, unknown>;
     try {
       if (toolUse.name === MEMORY_REMEMBER_FACT) {
@@ -745,9 +893,9 @@ export class AiService {
   private async runMetaAdsTool(
     workspaceId: string,
     userId: string | null,
-    toolUse: Anthropic.Beta.BetaToolUseBlock,
+    toolUse: ToolCall,
     ctx: { confirmVia: ConfirmMode; pending: { current: AiPendingAction | null } },
-  ): Promise<Anthropic.Beta.BetaToolResultBlockParam> {
+  ): Promise<LocalToolResult> {
     const input = (toolUse.input ?? {}) as Record<string, unknown>;
     const isWrite = META_ADS_WRITE_TOOL_NAMES.has(toolUse.name);
 
@@ -967,9 +1115,9 @@ export class AiService {
    */
   private async runWorkspaceStatsTool(
     workspaceId: string,
-    toolUse: Anthropic.Beta.BetaToolUseBlock,
+    toolUse: ToolCall,
     fetchMemberCount?: () => Promise<number | null>,
-  ): Promise<Anthropic.Beta.BetaToolResultBlockParam> {
+  ): Promise<LocalToolResult> {
     try {
       const [signedUpMembers, integrations, totalMembers] = await Promise.all([
         this.usersService.countByWorkspace(workspaceId),
@@ -1027,9 +1175,9 @@ export class AiService {
   private async runSpaceTool(
     workspaceId: string,
     userId: string | null,
-    toolUse: Anthropic.Beta.BetaToolUseBlock,
+    toolUse: ToolCall,
     spaces: AiSpace[],
-  ): Promise<Anthropic.Beta.BetaToolResultBlockParam> {
+  ): Promise<LocalToolResult> {
     const input = (toolUse.input ?? {}) as Record<string, unknown>;
     try {
       let slug: string;
@@ -1071,10 +1219,16 @@ export class AiService {
     workspaceId: string,
     userId: string | null,
     model: string,
-    tokensUsed: number,
-    options: { taskId?: string | null; sourceName?: string } = {},
+    inputTokens: number,
+    outputTokens: number,
+    options: {
+      taskId?: string | null;
+      sourceName?: string;
+      providerCostUsd?: number;
+      resolvedModel?: string;
+    } = {},
   ): Promise<void> {
-    if (tokensUsed <= 0) return;
+    if (inputTokens + outputTokens <= 0) return;
     try {
       await this.usageService.recordEvent({
         workspaceId,
@@ -1082,49 +1236,15 @@ export class AiService {
         taskId: options.taskId ?? null,
         type: options.taskId ? CreditEventType.SCHEDULED_TASK : CreditEventType.THREAD,
         model,
-        tokensUsed,
+        inputTokens,
+        outputTokens,
         sourceName: options.sourceName ?? 'ai.run',
+        providerCostUsd: options.providerCostUsd,
+        resolvedModel: options.resolvedModel ?? null,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn(`Failed to record AI usage: ${message}`);
-    }
-  }
-
-  /**
-   * Whether a failed model call was Anthropic rejecting the request because it
-   * couldn't reach a remote MCP server (the Pipedream connector being down or
-   * unresponsive), as opposed to a genuine bad request. Such failures are worth
-   * retrying without the connector; others are not.
-   */
-  private isMcpConnectionError(error: unknown): boolean {
-    const message = error instanceof Error ? error.message : String(error);
-    return message.includes('MCP server');
-  }
-
-  private async create(
-    client: Anthropic,
-    model: string,
-    system: string,
-    messages: Anthropic.Beta.BetaMessageParam[],
-    mcpServers: Array<{ type: 'url'; url: string; name: string; authorization_token?: string }>,
-    tools: Anthropic.Beta.BetaToolUnion[],
-  ): Promise<Anthropic.Beta.BetaMessage> {
-    try {
-      return await client.beta.messages.create({
-        model,
-        max_tokens: 8000,
-        thinking: { type: 'adaptive' },
-        system,
-        messages,
-        ...(tools.length ? { tools } : {}),
-        ...(mcpServers.length ? { mcp_servers: mcpServers } : {}),
-        betas: [MCP_BETA],
-      });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.logger.error(`Anthropic request failed: ${message}`);
-      throw new ServiceUnavailableException(`AI request failed: ${message}`);
     }
   }
 }

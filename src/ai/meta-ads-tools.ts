@@ -1,4 +1,4 @@
-import type Anthropic from '@anthropic-ai/sdk';
+import type { ToolSpec } from './providers/provider.interface';
 
 /**
  * Local (client-side) tools for Meta Ads, executed by AiService against the
@@ -55,24 +55,22 @@ const CONFIRMED_PROP = {
   },
 } as const;
 
-const LIST_AD_ACCOUNTS_TOOL: Anthropic.Beta.BetaToolUnion = {
-  type: 'custom',
+const LIST_AD_ACCOUNTS_TOOL: ToolSpec = {
   name: META_ADS_LIST_AD_ACCOUNTS,
   description:
     'List the Meta (Facebook/Instagram) ad accounts the connected account can access. ' +
     'Returns each account id (e.g. "act_123"), name, currency, and status. Call this first ' +
     'to discover the ad_account_id needed by the other Meta Ads tools. Returns JSON.',
-  input_schema: { type: 'object', properties: {} },
+  parameters: { type: 'object', properties: {} },
 };
 
-const GET_INSIGHTS_TOOL: Anthropic.Beta.BetaToolUnion = {
-  type: 'custom',
+const GET_INSIGHTS_TOOL: ToolSpec = {
   name: META_ADS_GET_INSIGHTS,
   description:
     'Get Meta Ads performance insights (spend, impressions, clicks, CTR, reach, conversions, etc.) ' +
     'for an ad account, at the account/campaign/ad set/ad level, over a preset or custom date range. ' +
     'Use for questions like "last 7 days performance for KIVOVA". Returns JSON rows.',
-  input_schema: {
+  parameters: {
     type: 'object',
     properties: {
       ad_account_id: {
@@ -107,13 +105,12 @@ const GET_INSIGHTS_TOOL: Anthropic.Beta.BetaToolUnion = {
   },
 };
 
-const LIST_CAMPAIGNS_TOOL: Anthropic.Beta.BetaToolUnion = {
-  type: 'custom',
+const LIST_CAMPAIGNS_TOOL: ToolSpec = {
   name: META_ADS_LIST_CAMPAIGNS,
   description:
     'List campaigns in a Meta ad account with their id, name, status (ACTIVE/PAUSED/…), objective, ' +
     'and budgets. Use for "what campaigns are running/paused?". Returns JSON.',
-  input_schema: {
+  parameters: {
     type: 'object',
     properties: {
       ad_account_id: {
@@ -131,15 +128,14 @@ const LIST_CAMPAIGNS_TOOL: Anthropic.Beta.BetaToolUnion = {
   },
 };
 
-const CREATE_CAMPAIGN_TOOL: Anthropic.Beta.BetaToolUnion = {
-  type: 'custom',
+const CREATE_CAMPAIGN_TOOL: ToolSpec = {
   name: META_ADS_CREATE_CAMPAIGN,
   description:
     'Create a new Meta Ads campaign. It is ALWAYS created PAUSED — it will not spend until you ' +
     'separately activate it (meta_ads_update_campaign with status ACTIVE), which also needs ' +
     'confirmation. Confirm the name, objective, and budget with the user before calling. Returns ' +
     'the new campaign id.',
-  input_schema: {
+  parameters: {
     type: 'object',
     properties: {
       ad_account_id: {
@@ -170,14 +166,13 @@ const CREATE_CAMPAIGN_TOOL: Anthropic.Beta.BetaToolUnion = {
   },
 };
 
-const UPDATE_CAMPAIGN_TOOL: Anthropic.Beta.BetaToolUnion = {
-  type: 'custom',
+const UPDATE_CAMPAIGN_TOOL: ToolSpec = {
   name: META_ADS_UPDATE_CAMPAIGN,
   description:
     'Update a campaign: rename, change daily budget, or set status. Setting status to ACTIVE ' +
     'starts delivery and spends money — always confirm with the user first. Confirm any change ' +
     'before calling.',
-  input_schema: {
+  parameters: {
     type: 'object',
     properties: {
       campaign_id: { type: 'string', description: 'The campaign id to update.' },
@@ -197,13 +192,12 @@ const UPDATE_CAMPAIGN_TOOL: Anthropic.Beta.BetaToolUnion = {
   },
 };
 
-const DELETE_CAMPAIGN_TOOL: Anthropic.Beta.BetaToolUnion = {
-  type: 'custom',
+const DELETE_CAMPAIGN_TOOL: ToolSpec = {
   name: META_ADS_DELETE_CAMPAIGN,
   description:
     'Permanently delete a campaign. This is irreversible — always confirm the exact campaign ' +
     'with the user before calling.',
-  input_schema: {
+  parameters: {
     type: 'object',
     properties: {
       campaign_id: { type: 'string', description: 'The campaign id to delete.' },
@@ -213,28 +207,26 @@ const DELETE_CAMPAIGN_TOOL: Anthropic.Beta.BetaToolUnion = {
   },
 };
 
-const LIST_AD_SETS_TOOL: Anthropic.Beta.BetaToolUnion = {
-  type: 'custom',
+const LIST_AD_SETS_TOOL: ToolSpec = {
   name: META_ADS_LIST_AD_SETS,
   description:
     'List the ad sets under a campaign, with status, optimization goal, budget, and targeting. ' +
     'Returns JSON.',
-  input_schema: {
+  parameters: {
     type: 'object',
     properties: { campaign_id: { type: 'string', description: 'The parent campaign id.' } },
     required: ['campaign_id'],
   },
 };
 
-const CREATE_AD_SET_TOOL: Anthropic.Beta.BetaToolUnion = {
-  type: 'custom',
+const CREATE_AD_SET_TOOL: ToolSpec = {
   name: META_ADS_CREATE_AD_SET,
   description:
     'Create an ad set (audience, budget, schedule) under a campaign. Always created PAUSED. ' +
     'Pick optimization_goal/billing_event to match the campaign objective (e.g. Traffic → ' +
     'optimization_goal LINK_CLICKS, billing_event IMPRESSIONS). Build targeting per Meta’s spec; ' +
     'resolve interests to ids with meta_ads_search_interests first. Confirm details with the user.',
-  input_schema: {
+  parameters: {
     type: 'object',
     properties: {
       ad_account_id: { type: 'string', description: 'e.g. "act_1709976226241899".' },
@@ -271,13 +263,12 @@ const CREATE_AD_SET_TOOL: Anthropic.Beta.BetaToolUnion = {
   },
 };
 
-const UPDATE_AD_SET_TOOL: Anthropic.Beta.BetaToolUnion = {
-  type: 'custom',
+const UPDATE_AD_SET_TOOL: ToolSpec = {
   name: META_ADS_UPDATE_AD_SET,
   description:
     'Update an ad set: rename, change daily budget, or set status. ACTIVE starts spending — ' +
     'confirm with the user first.',
-  input_schema: {
+  parameters: {
     type: 'object',
     properties: {
       ad_set_id: { type: 'string' },
@@ -290,36 +281,33 @@ const UPDATE_AD_SET_TOOL: Anthropic.Beta.BetaToolUnion = {
   },
 };
 
-const DELETE_AD_SET_TOOL: Anthropic.Beta.BetaToolUnion = {
-  type: 'custom',
+const DELETE_AD_SET_TOOL: ToolSpec = {
   name: META_ADS_DELETE_AD_SET,
   description: 'Permanently delete an ad set. Irreversible — confirm the exact ad set first.',
-  input_schema: {
+  parameters: {
     type: 'object',
     properties: { ad_set_id: { type: 'string' }, ...CONFIRMED_PROP },
     required: ['ad_set_id', 'confirmed'],
   },
 };
 
-const LIST_ADS_TOOL: Anthropic.Beta.BetaToolUnion = {
-  type: 'custom',
+const LIST_ADS_TOOL: ToolSpec = {
   name: META_ADS_LIST_ADS,
   description: 'List the ads under an ad set, with status and creative. Returns JSON.',
-  input_schema: {
+  parameters: {
     type: 'object',
     properties: { ad_set_id: { type: 'string' } },
     required: ['ad_set_id'],
   },
 };
 
-const CREATE_AD_CREATIVE_TOOL: Anthropic.Beta.BetaToolUnion = {
-  type: 'custom',
+const CREATE_AD_CREATIVE_TOOL: ToolSpec = {
   name: META_ADS_CREATE_AD_CREATIVE,
   description:
     'Create a link ad creative from a Facebook Page. Requires a page_id — get one from ' +
     'meta_ads_list_pages; if the account has no Page, tell the user to connect one (ads cannot run ' +
     'without it). Confirm the creative with the user before calling. Returns the creative id.',
-  input_schema: {
+  parameters: {
     type: 'object',
     properties: {
       ad_account_id: { type: 'string' },
@@ -339,13 +327,12 @@ const CREATE_AD_CREATIVE_TOOL: Anthropic.Beta.BetaToolUnion = {
   },
 };
 
-const CREATE_AD_TOOL: Anthropic.Beta.BetaToolUnion = {
-  type: 'custom',
+const CREATE_AD_TOOL: ToolSpec = {
   name: META_ADS_CREATE_AD,
   description:
     'Create an ad (PAUSED) that links an ad set to a creative. Build the creative first with ' +
     'meta_ads_create_ad_creative. Confirm with the user before calling. Returns the ad id.',
-  input_schema: {
+  parameters: {
     type: 'object',
     properties: {
       ad_account_id: { type: 'string' },
@@ -358,12 +345,11 @@ const CREATE_AD_TOOL: Anthropic.Beta.BetaToolUnion = {
   },
 };
 
-const UPDATE_AD_TOOL: Anthropic.Beta.BetaToolUnion = {
-  type: 'custom',
+const UPDATE_AD_TOOL: ToolSpec = {
   name: META_ADS_UPDATE_AD,
   description:
     'Update an ad: rename or set status. ACTIVE starts delivery/spend — confirm with the user first.',
-  input_schema: {
+  parameters: {
     type: 'object',
     properties: {
       ad_id: { type: 'string' },
@@ -375,33 +361,30 @@ const UPDATE_AD_TOOL: Anthropic.Beta.BetaToolUnion = {
   },
 };
 
-const DELETE_AD_TOOL: Anthropic.Beta.BetaToolUnion = {
-  type: 'custom',
+const DELETE_AD_TOOL: ToolSpec = {
   name: META_ADS_DELETE_AD,
   description: 'Permanently delete an ad. Irreversible — confirm the exact ad first.',
-  input_schema: {
+  parameters: {
     type: 'object',
     properties: { ad_id: { type: 'string' }, ...CONFIRMED_PROP },
     required: ['ad_id', 'confirmed'],
   },
 };
 
-const LIST_PAGES_TOOL: Anthropic.Beta.BetaToolUnion = {
-  type: 'custom',
+const LIST_PAGES_TOOL: ToolSpec = {
   name: META_ADS_LIST_PAGES,
   description:
     'List the Facebook Pages the connected account can run ads as (needed for ad creatives). ' +
     'Returns JSON; an empty list means no Page is connected.',
-  input_schema: { type: 'object', properties: {} },
+  parameters: { type: 'object', properties: {} },
 };
 
-const SEARCH_INTERESTS_TOOL: Anthropic.Beta.BetaToolUnion = {
-  type: 'custom',
+const SEARCH_INTERESTS_TOOL: ToolSpec = {
   name: META_ADS_SEARCH_INTERESTS,
   description:
     'Search Meta interest targeting options by keyword (e.g. "furniture"), returning ids to use in ' +
     'an ad set targeting spec. Returns JSON.',
-  input_schema: {
+  parameters: {
     type: 'object',
     properties: { query: { type: 'string', description: 'Interest keyword to search.' } },
     required: ['query'],
@@ -409,7 +392,7 @@ const SEARCH_INTERESTS_TOOL: Anthropic.Beta.BetaToolUnion = {
 };
 
 /** The Meta Ads tool set, added to a run only when a Meta account is connected. */
-export const META_ADS_TOOLS: Anthropic.Beta.BetaToolUnion[] = [
+export const META_ADS_TOOLS: ToolSpec[] = [
   LIST_AD_ACCOUNTS_TOOL,
   GET_INSIGHTS_TOOL,
   LIST_CAMPAIGNS_TOOL,

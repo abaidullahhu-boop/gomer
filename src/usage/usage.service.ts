@@ -1,7 +1,10 @@
 import { Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
+import { buildCatalog, creditRates, listCostUsd } from '../ai/providers/model-catalog';
 import { CreditEventType, CreditGrantReason } from '../common/enums';
+import { AppConfig } from '../config/configuration';
 import { CreditEvent, CreditGrant } from '../database/entities';
 
 export interface UsageSummary {
@@ -27,15 +30,11 @@ export const CREDITS_PER_DOLLAR = 100;
 export const ONBOARDING_CREDITS = 100 * CREDITS_PER_DOLLAR;
 
 /**
- * Credits charged per 1,000 tokens, by model family (matched by substring).
- * With 1 credit = $0.01 these approximate blended input/output API cost.
+ * Rate applied when a usage event names a model the catalog does not know —
+ * one that has since been retired, or a gateway model dropped from config.
+ * Deliberately Opus-priced so an unknown model is never billed too cheaply.
  */
-const MODEL_CREDIT_RATES: Array<{ match: string; creditsPerKToken: number }> = [
-  { match: 'opus', creditsPerKToken: 5 },
-  { match: 'sonnet', creditsPerKToken: 1 },
-  { match: 'haiku', creditsPerKToken: 0.25 },
-];
-const DEFAULT_CREDITS_PER_KTOKEN = 1;
+const UNKNOWN_MODEL_RATES = { input: 2.5, output: 12.5 };
 
 /** A single unit of metered consumption to persist. */
 export interface RecordUsageInput {
@@ -44,10 +43,19 @@ export interface RecordUsageInput {
   /** The scheduled task that spent the credits, when the run came from one. */
   taskId?: string | null;
   model: string;
-  tokensUsed: number;
+  /** Input and output are billed at different rates, so they are kept apart. */
+  inputTokens: number;
+  outputTokens: number;
   /** Human label for what spent the credits, e.g. an app or feature name. */
   sourceName: string;
   type?: CreditEventType;
+  /**
+   * What the provider says the run cost us in USD. Omit when it reports nothing
+   * and the cost will be derived from the model's list price instead.
+   */
+  providerCostUsd?: number;
+  /** The backend that actually served a routed model id, when it reported one. */
+  resolvedModel?: string | null;
 }
 
 /** A credit addition to persist on the grants ledger. */
@@ -74,17 +82,38 @@ export class UsageService {
     private readonly creditEventRepository: Repository<CreditEvent>,
     @InjectRepository(CreditGrant)
     private readonly creditGrantRepository: Repository<CreditGrant>,
+    private readonly configService: ConfigService<AppConfig, true>,
   ) {}
 
-  /** Credits charged for a token count on a model, minimum 1 per metered event. */
-  private creditsFor(model: string, tokensUsed: number): number {
-    const rate =
-      MODEL_CREDIT_RATES.find((r) => model.includes(r.match))?.creditsPerKToken ??
-      DEFAULT_CREDITS_PER_KTOKEN;
-    return Math.max(1, Math.ceil((tokensUsed / 1000) * rate));
+  private definitionFor(model: string) {
+    return buildCatalog(this.configService.get('ai', { infer: true }).gatewayModels).find(
+      (candidate) => candidate.id === model,
+    );
   }
 
-  /** Persist an immutable usage event, pricing tokens by the model's rate. */
+  /** Credits charged for a run's tokens, minimum 1 per metered event. */
+  private creditsFor(model: string, inputTokens: number, outputTokens: number): number {
+    const definition = this.definitionFor(model);
+    const rates = definition ? creditRates(definition) : UNKNOWN_MODEL_RATES;
+    const credits = (inputTokens / 1000) * rates.input + (outputTokens / 1000) * rates.output;
+    return Math.max(1, Math.ceil(credits));
+  }
+
+  /**
+   * What the run cost us, in USD. A provider-reported figure wins: for a routed
+   * model id the catalog price is only a guess at which backend ran, while the
+   * gateway knows. Falls back to list price, and to 0 for an unknown model —
+   * recording nothing is better than inventing a number.
+   */
+  private costUsdFor(input: RecordUsageInput): number {
+    if (input.providerCostUsd !== undefined && Number.isFinite(input.providerCostUsd)) {
+      return input.providerCostUsd;
+    }
+    const definition = this.definitionFor(input.model);
+    return definition ? listCostUsd(definition, input.inputTokens, input.outputTokens) : 0;
+  }
+
+  /** Persist an immutable usage event, pricing tokens by the model's own rates. */
   recordEvent(input: RecordUsageInput): Promise<CreditEvent> {
     const event = this.creditEventRepository.create({
       workspaceId: input.workspaceId,
@@ -92,9 +121,16 @@ export class UsageService {
       taskId: input.taskId ?? null,
       type: input.type ?? CreditEventType.THREAD,
       sourceName: input.sourceName,
-      tokensUsed: input.tokensUsed,
-      creditsUsed: this.creditsFor(input.model, input.tokensUsed),
+      inputTokens: input.inputTokens,
+      outputTokens: input.outputTokens,
+      // Kept as the sum so the analytics queries below stay a single column read.
+      tokensUsed: input.inputTokens + input.outputTokens,
+      creditsUsed: this.creditsFor(input.model, input.inputTokens, input.outputTokens),
       model: input.model,
+      resolvedModel: input.resolvedModel ?? null,
+      // numeric columns round-trip as strings in pg; fix the scale here so the
+      // stored value matches the column rather than relying on the driver.
+      providerCostUsd: this.costUsdFor(input).toFixed(6),
     });
     return this.creditEventRepository.save(event);
   }

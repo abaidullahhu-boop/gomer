@@ -61,6 +61,18 @@ export interface AppConfig {
   ai: {
     anthropicApiKey: string;
     model: string;
+    /**
+     * An OpenAI-compatible gateway (OpenRouter, a self-hosted OmniRoute, OpenAI
+     * itself) serving every non-Anthropic model. Swapping vendors is a base-URL
+     * change, not a code change.
+     */
+    gatewayBaseUrl: string;
+    gatewayApiKey: string;
+    /**
+     * Models the gateway serves, as JSON — the set differs per gateway, so it is
+     * declared by the operator rather than hardcoded. See `.env.example`.
+     */
+    gatewayModels: string;
   };
   billing: {
     /** The platform's own Stripe secret key (top-ups) — NOT a customer's. */
@@ -122,6 +134,9 @@ export const configuration = (): AppConfig => ({
   ai: {
     anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? '',
     model: process.env.AI_MODEL ?? 'claude-opus-4-8',
+    gatewayBaseUrl: process.env.AI_GATEWAY_BASE_URL ?? '',
+    gatewayApiKey: process.env.AI_GATEWAY_API_KEY ?? '',
+    gatewayModels: process.env.AI_GATEWAY_MODELS ?? '',
   },
   billing: {
     stripeSecretKey: process.env.STRIPE_SECRET_KEY ?? '',

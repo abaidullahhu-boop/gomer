@@ -1,4 +1,4 @@
-import type Anthropic from '@anthropic-ai/sdk';
+import type { ToolSpec } from './providers/provider.interface';
 
 /**
  * Local (client-side) tools for the automated rule engine, executed by
@@ -15,8 +15,7 @@ export const LIST_AD_RULES = 'list_ad_rules';
 export const SET_AD_RULE_ACTIVE = 'set_ad_rule_active';
 export const DELETE_AD_RULE = 'delete_ad_rule';
 
-const CREATE_AD_RULE_TOOL: Anthropic.Beta.BetaToolUnion = {
-  type: 'custom',
+const CREATE_AD_RULE_TOOL: ToolSpec = {
   name: CREATE_AD_RULE,
   description:
     'Create an automated rule that checks a Meta Ads metric on a schedule and, when it breaches, ' +
@@ -28,7 +27,7 @@ const CREATE_AD_RULE_TOOL: Anthropic.Beta.BetaToolUnion = {
     'rule changes a live ad account on its own, describe the full rule — metric, threshold, window, ' +
     'action, schedule, and guardrails — and get explicit confirmation BEFORE calling. Use the ad ' +
     'account id from meta_ads_list_ad_accounts.',
-  input_schema: {
+  parameters: {
     type: 'object',
     properties: {
       name: { type: 'string', description: 'Short human name, e.g. "Overnight CPA pause".' },
@@ -112,23 +111,21 @@ const CREATE_AD_RULE_TOOL: Anthropic.Beta.BetaToolUnion = {
   },
 };
 
-const LIST_AD_RULES_TOOL: Anthropic.Beta.BetaToolUnion = {
-  type: 'custom',
+const LIST_AD_RULES_TOOL: ToolSpec = {
   name: LIST_AD_RULES,
   description:
     "List this workspace's automated ad rules with their conditions, actions, guardrails, " +
     'schedule, and active state. Use for "what rules are running?" or to find a rule id to ' +
     'pause or delete. Returns JSON.',
-  input_schema: { type: 'object', properties: {} },
+  parameters: { type: 'object', properties: {} },
 };
 
-const SET_AD_RULE_ACTIVE_TOOL: Anthropic.Beta.BetaToolUnion = {
-  type: 'custom',
+const SET_AD_RULE_ACTIVE_TOOL: ToolSpec = {
   name: SET_AD_RULE_ACTIVE,
   description:
     'Enable or disable an automated ad rule by id without deleting it. Use to pause a rule ("stop ' +
     'the overnight pausing for now") or resume it. Get the id from list_ad_rules.',
-  input_schema: {
+  parameters: {
     type: 'object',
     properties: {
       rule_id: { type: 'string', description: 'The rule id to toggle.' },
@@ -138,13 +135,12 @@ const SET_AD_RULE_ACTIVE_TOOL: Anthropic.Beta.BetaToolUnion = {
   },
 };
 
-const DELETE_AD_RULE_TOOL: Anthropic.Beta.BetaToolUnion = {
-  type: 'custom',
+const DELETE_AD_RULE_TOOL: ToolSpec = {
   name: DELETE_AD_RULE,
   description:
     'Permanently delete an automated ad rule by id. Confirm which rule with the user first. Get ' +
     'the id from list_ad_rules.',
-  input_schema: {
+  parameters: {
     type: 'object',
     properties: { rule_id: { type: 'string', description: 'The rule id to delete.' } },
     required: ['rule_id'],
@@ -152,7 +148,7 @@ const DELETE_AD_RULE_TOOL: Anthropic.Beta.BetaToolUnion = {
 };
 
 /** The rule-engine tool set, added only when a Meta Ads account is connected. */
-export const RULE_TOOLS: Anthropic.Beta.BetaToolUnion[] = [
+export const RULE_TOOLS: ToolSpec[] = [
   CREATE_AD_RULE_TOOL,
   LIST_AD_RULES_TOOL,
   SET_AD_RULE_ACTIVE_TOOL,
