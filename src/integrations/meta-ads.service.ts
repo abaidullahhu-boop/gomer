@@ -104,6 +104,40 @@ export interface UpdateAdParams {
 }
 
 /**
+ * How a copy is left after duplication. Always defaults to PAUSED at the tool
+ * layer so a clone never starts spending on its own; INHERITED keeps the
+ * source's status (which may be ACTIVE) and must only be used on explicit ask.
+ */
+export type CopyStatusOption = 'PAUSED' | 'ACTIVE' | 'INHERITED_FROM_SOURCE';
+
+export interface DuplicateCampaignParams {
+  campaignId: string;
+  /** Also copy the campaign's ad sets and ads, not just the campaign shell. */
+  deepCopy?: boolean;
+  statusOption?: CopyStatusOption;
+  /** Appended to copied object names, e.g. ' - Copy'. */
+  renameSuffix?: string;
+}
+
+export interface DuplicateAdSetParams {
+  adSetId: string;
+  /** Target campaign for the copy; omit to clone within the same campaign. */
+  campaignId?: string;
+  /** Also copy the ad set's ads. */
+  deepCopy?: boolean;
+  statusOption?: CopyStatusOption;
+  renameSuffix?: string;
+}
+
+export interface DuplicateAdParams {
+  adId: string;
+  /** Target ad set for the copy; omit to clone within the same ad set. */
+  adSetId?: string;
+  statusOption?: CopyStatusOption;
+  renameSuffix?: string;
+}
+
+/**
  * A thin client for the Meta Marketing (Graph) API, used by the Meta Ads local
  * tools — reporting reads plus campaign / ad set / ad / creative management. It
  * is deliberately stateless: the caller passes the access token (refreshed by
@@ -187,6 +221,22 @@ export class MetaAdsService {
     return this.request(campaignId, accessToken, {}, 'DELETE');
   }
 
+  /**
+   * Duplicate a campaign via Graph's `/copies`. With `deepCopy` the whole tree
+   * (ad sets and ads) is cloned; otherwise just the campaign shell. The copy is
+   * PAUSED unless the caller overrides it, so a duplicate never spends on its
+   * own. Returns Meta's copy result (e.g. `copied_campaign_id`).
+   */
+  duplicateCampaign(
+    accessToken: string,
+    params: DuplicateCampaignParams,
+  ): Promise<Record<string, unknown>> {
+    return this.post(`${params.campaignId}/copies`, accessToken, {
+      deep_copy: String(params.deepCopy ?? false),
+      ...this.copyOptions(params.statusOption, params.renameSuffix, params.deepCopy),
+    });
+  }
+
   // ── Ad sets ────────────────────────────────────────────────────────────────
 
   /** List ad sets under a campaign. */
@@ -247,6 +297,22 @@ export class MetaAdsService {
     return this.request(adSetId, accessToken, {}, 'DELETE');
   }
 
+  /**
+   * Duplicate an ad set via `/copies`, optionally into a different campaign and
+   * optionally copying its ads (`deepCopy`). PAUSED unless overridden.
+   */
+  duplicateAdSet(
+    accessToken: string,
+    params: DuplicateAdSetParams,
+  ): Promise<Record<string, unknown>> {
+    const body: Record<string, string> = {
+      deep_copy: String(params.deepCopy ?? false),
+      ...this.copyOptions(params.statusOption, params.renameSuffix, params.deepCopy),
+    };
+    if (params.campaignId) body.campaign_id = params.campaignId;
+    return this.post(`${params.adSetId}/copies`, accessToken, body);
+  }
+
   // ── Ads & creatives ─────────────────────────────────────────────────────────
 
   /** List ads under an ad set. */
@@ -295,6 +361,40 @@ export class MetaAdsService {
   /** Delete (permanently) an ad. */
   deleteAd(accessToken: string, adId: string): Promise<{ success: boolean }> {
     return this.request(adId, accessToken, {}, 'DELETE');
+  }
+
+  /**
+   * Duplicate an ad via `/copies`, optionally into a different ad set. Ads have
+   * no children, so there is no deep copy. PAUSED unless overridden.
+   */
+  duplicateAd(accessToken: string, params: DuplicateAdParams): Promise<Record<string, unknown>> {
+    const body: Record<string, string> = {
+      ...this.copyOptions(params.statusOption, params.renameSuffix, false),
+    };
+    if (params.adSetId) body.adset_id = params.adSetId;
+    return this.post(`${params.adId}/copies`, accessToken, body);
+  }
+
+  /**
+   * Shared `/copies` options: a safe default status (PAUSED) and, when a suffix
+   * is given, a rename spec that reaches child objects on a deep copy so clones
+   * do not collide by name with their source.
+   */
+  private copyOptions(
+    statusOption: CopyStatusOption | undefined,
+    renameSuffix: string | undefined,
+    deepCopy: boolean | undefined,
+  ): Record<string, string> {
+    const options: Record<string, string> = {
+      status_option: statusOption ?? 'PAUSED',
+    };
+    if (renameSuffix) {
+      options.rename_options = JSON.stringify({
+        rename_strategy: deepCopy ? 'DEEP_RENAME' : 'ONLY_TOP_LEVEL_RENAME',
+        rename_suffix: renameSuffix,
+      });
+    }
+    return options;
   }
 
   // ── Discovery helpers ───────────────────────────────────────────────────────

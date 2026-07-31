@@ -18,15 +18,18 @@ export const META_ADS_LIST_CAMPAIGNS = 'meta_ads_list_campaigns';
 export const META_ADS_CREATE_CAMPAIGN = 'meta_ads_create_campaign';
 export const META_ADS_UPDATE_CAMPAIGN = 'meta_ads_update_campaign';
 export const META_ADS_DELETE_CAMPAIGN = 'meta_ads_delete_campaign';
+export const META_ADS_DUPLICATE_CAMPAIGN = 'meta_ads_duplicate_campaign';
 export const META_ADS_LIST_AD_SETS = 'meta_ads_list_ad_sets';
 export const META_ADS_CREATE_AD_SET = 'meta_ads_create_ad_set';
 export const META_ADS_UPDATE_AD_SET = 'meta_ads_update_ad_set';
 export const META_ADS_DELETE_AD_SET = 'meta_ads_delete_ad_set';
+export const META_ADS_DUPLICATE_AD_SET = 'meta_ads_duplicate_ad_set';
 export const META_ADS_LIST_ADS = 'meta_ads_list_ads';
 export const META_ADS_CREATE_AD_CREATIVE = 'meta_ads_create_ad_creative';
 export const META_ADS_CREATE_AD = 'meta_ads_create_ad';
 export const META_ADS_UPDATE_AD = 'meta_ads_update_ad';
 export const META_ADS_DELETE_AD = 'meta_ads_delete_ad';
+export const META_ADS_DUPLICATE_AD = 'meta_ads_duplicate_ad';
 export const META_ADS_LIST_PAGES = 'meta_ads_list_pages';
 export const META_ADS_SEARCH_INTERESTS = 'meta_ads_search_interests';
 
@@ -35,13 +38,16 @@ export const META_ADS_WRITE_TOOL_NAMES = new Set<string>([
   META_ADS_CREATE_CAMPAIGN,
   META_ADS_UPDATE_CAMPAIGN,
   META_ADS_DELETE_CAMPAIGN,
+  META_ADS_DUPLICATE_CAMPAIGN,
   META_ADS_CREATE_AD_SET,
   META_ADS_UPDATE_AD_SET,
   META_ADS_DELETE_AD_SET,
+  META_ADS_DUPLICATE_AD_SET,
   META_ADS_CREATE_AD_CREATIVE,
   META_ADS_CREATE_AD,
   META_ADS_UPDATE_AD,
   META_ADS_DELETE_AD,
+  META_ADS_DUPLICATE_AD,
 ]);
 
 /** Shared `confirmed` gate: a write only runs when the user has approved it. */
@@ -207,6 +213,31 @@ const DELETE_CAMPAIGN_TOOL: ToolSpec = {
   },
 };
 
+const DUPLICATE_CAMPAIGN_TOOL: ToolSpec = {
+  name: META_ADS_DUPLICATE_CAMPAIGN,
+  description:
+    'Duplicate an existing campaign. With deep_copy true the campaign and all its ad sets and ' +
+    'ads are cloned; otherwise just the campaign shell. The copy is created PAUSED so it never ' +
+    'starts spending on its own — the user activates it separately. Confirm the source campaign ' +
+    'before calling.',
+  parameters: {
+    type: 'object',
+    properties: {
+      campaign_id: { type: 'string', description: 'The campaign id to duplicate.' },
+      deep_copy: {
+        type: 'boolean',
+        description: 'True also clones the campaign’s ad sets and ads. Defaults to false.',
+      },
+      rename_suffix: {
+        type: 'string',
+        description: 'Optional text appended to copied names, e.g. " - Copy".',
+      },
+      ...CONFIRMED_PROP,
+    },
+    required: ['campaign_id', 'confirmed'],
+  },
+};
+
 const LIST_AD_SETS_TOOL: ToolSpec = {
   name: META_ADS_LIST_AD_SETS,
   description:
@@ -291,6 +322,33 @@ const DELETE_AD_SET_TOOL: ToolSpec = {
   },
 };
 
+const DUPLICATE_AD_SET_TOOL: ToolSpec = {
+  name: META_ADS_DUPLICATE_AD_SET,
+  description:
+    'Duplicate an ad set, optionally into a different campaign (campaign_id) and optionally ' +
+    'cloning its ads (deep_copy). The copy is created PAUSED. Confirm the source ad set first.',
+  parameters: {
+    type: 'object',
+    properties: {
+      ad_set_id: { type: 'string', description: 'The ad set id to duplicate.' },
+      campaign_id: {
+        type: 'string',
+        description: 'Target campaign for the copy. Omit to clone within the same campaign.',
+      },
+      deep_copy: {
+        type: 'boolean',
+        description: 'True also clones the ad set’s ads. Defaults to false.',
+      },
+      rename_suffix: {
+        type: 'string',
+        description: 'Optional text appended to copied names, e.g. " - Copy".',
+      },
+      ...CONFIRMED_PROP,
+    },
+    required: ['ad_set_id', 'confirmed'],
+  },
+};
+
 const LIST_ADS_TOOL: ToolSpec = {
   name: META_ADS_LIST_ADS,
   description: 'List the ads under an ad set, with status and creative. Returns JSON.',
@@ -371,6 +429,29 @@ const DELETE_AD_TOOL: ToolSpec = {
   },
 };
 
+const DUPLICATE_AD_TOOL: ToolSpec = {
+  name: META_ADS_DUPLICATE_AD,
+  description:
+    'Duplicate an ad, optionally into a different ad set (ad_set_id). The copy is created ' +
+    'PAUSED. Confirm the source ad first.',
+  parameters: {
+    type: 'object',
+    properties: {
+      ad_id: { type: 'string', description: 'The ad id to duplicate.' },
+      ad_set_id: {
+        type: 'string',
+        description: 'Target ad set for the copy. Omit to clone within the same ad set.',
+      },
+      rename_suffix: {
+        type: 'string',
+        description: 'Optional text appended to the copied name, e.g. " - Copy".',
+      },
+      ...CONFIRMED_PROP,
+    },
+    required: ['ad_id', 'confirmed'],
+  },
+};
+
 const LIST_PAGES_TOOL: ToolSpec = {
   name: META_ADS_LIST_PAGES,
   description:
@@ -399,15 +480,18 @@ export const META_ADS_TOOLS: ToolSpec[] = [
   CREATE_CAMPAIGN_TOOL,
   UPDATE_CAMPAIGN_TOOL,
   DELETE_CAMPAIGN_TOOL,
+  DUPLICATE_CAMPAIGN_TOOL,
   LIST_AD_SETS_TOOL,
   CREATE_AD_SET_TOOL,
   UPDATE_AD_SET_TOOL,
   DELETE_AD_SET_TOOL,
+  DUPLICATE_AD_SET_TOOL,
   LIST_ADS_TOOL,
   CREATE_AD_CREATIVE_TOOL,
   CREATE_AD_TOOL,
   UPDATE_AD_TOOL,
   DELETE_AD_TOOL,
+  DUPLICATE_AD_TOOL,
   LIST_PAGES_TOOL,
   SEARCH_INTERESTS_TOOL,
 ];
@@ -420,15 +504,18 @@ export const META_ADS_TOOL_NAMES = new Set<string>([
   META_ADS_CREATE_CAMPAIGN,
   META_ADS_UPDATE_CAMPAIGN,
   META_ADS_DELETE_CAMPAIGN,
+  META_ADS_DUPLICATE_CAMPAIGN,
   META_ADS_LIST_AD_SETS,
   META_ADS_CREATE_AD_SET,
   META_ADS_UPDATE_AD_SET,
   META_ADS_DELETE_AD_SET,
+  META_ADS_DUPLICATE_AD_SET,
   META_ADS_LIST_ADS,
   META_ADS_CREATE_AD_CREATIVE,
   META_ADS_CREATE_AD,
   META_ADS_UPDATE_AD,
   META_ADS_DELETE_AD,
+  META_ADS_DUPLICATE_AD,
   META_ADS_LIST_PAGES,
   META_ADS_SEARCH_INTERESTS,
 ]);
