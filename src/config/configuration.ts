@@ -133,7 +133,7 @@ export const configuration = (): AppConfig => ({
   },
   ai: {
     anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? '',
-    model: process.env.AI_MODEL ?? 'claude-opus-4-8',
+    model: process.env.AI_MODEL ?? 'claude-sonnet-5',
     gatewayBaseUrl: process.env.AI_GATEWAY_BASE_URL ?? '',
     gatewayApiKey: process.env.AI_GATEWAY_API_KEY ?? '',
     gatewayModels: process.env.AI_GATEWAY_MODELS ?? '',

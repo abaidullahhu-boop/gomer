@@ -51,96 +51,39 @@ export const CREDIT_MARGIN = 5;
 
 /**
  * Anthropic models, priced from Anthropic's published rates. Every one supports
- * tool use and the server-side MCP connector.
+ * tool use, the server-side MCP connector, and prompt caching.
+ *
+ * Deliberately just two: Sonnet 5 for everyday work and Opus 4.8 for when a
+ * workspace wants the stronger model. Offering the whole Anthropic line-up made
+ * the picker a quiz with no right answer, and the older Opus and Sonnet
+ * generations cost the same as their current ones while performing worse.
  */
 const ANTHROPIC_MODELS: ModelDefinition[] = [
-  {
-    id: 'claude-opus-4-8',
-    name: 'Claude Opus 4.8',
-    description:
-      'Newest and strongest Opus model. Best for complex, high-stakes agent work. The default.',
-    provider: 'anthropic',
-    inputPricePerMillion: 5,
-    outputPricePerMillion: 25,
-    supportsTools: true,
-    supportsRemoteMcp: true,
-    supportsAdaptiveThinking: true,
-    badges: [{ type: 'recommended' }],
-  },
-  {
-    id: 'claude-fable-5',
-    name: 'Claude Fable 5',
-    description:
-      "Anthropic's most capable model, for the most demanding reasoning and long-running work. Costs twice Opus.",
-    provider: 'anthropic',
-    inputPricePerMillion: 10,
-    outputPricePerMillion: 50,
-    supportsTools: true,
-    supportsRemoteMcp: true,
-    supportsAdaptiveThinking: true,
-    badges: [{ type: 'premium', value: '+100%' }],
-  },
-  {
-    id: 'claude-opus-4-7',
-    name: 'Claude Opus 4.7',
-    description: 'Previous-generation Opus. Same price as 4.8, slightly less capable.',
-    provider: 'anthropic',
-    inputPricePerMillion: 5,
-    outputPricePerMillion: 25,
-    supportsTools: true,
-    supportsRemoteMcp: true,
-    supportsAdaptiveThinking: true,
-  },
-  {
-    id: 'claude-opus-4-6',
-    name: 'Claude Opus 4.6',
-    description: 'Older Opus. Same price as 4.8; keep only if you have tuned prompts for it.',
-    provider: 'anthropic',
-    inputPricePerMillion: 5,
-    outputPricePerMillion: 25,
-    supportsTools: true,
-    supportsRemoteMcp: true,
-    supportsAdaptiveThinking: true,
-  },
   {
     id: 'claude-sonnet-5',
     name: 'Claude Sonnet 5',
     description:
-      'Near-Opus quality on routine agent work at 40% of the cost. The best value for high-volume workspaces.',
+      'Near-Opus quality on everyday agent work at 40% less. The default, and the right choice for most workspaces.',
     provider: 'anthropic',
     inputPricePerMillion: 3,
     outputPricePerMillion: 15,
     supportsTools: true,
     supportsRemoteMcp: true,
     supportsAdaptiveThinking: true,
-    badges: [{ type: 'discount', value: '−40%' }],
+    badges: [{ type: 'recommended' }, { type: 'discount', value: '−40%' }],
   },
   {
-    id: 'claude-sonnet-4-6',
-    name: 'Claude Sonnet 4.6',
-    description: 'Previous-generation Sonnet. Cheaper than Opus, makes more mistakes.',
-    provider: 'anthropic',
-    inputPricePerMillion: 3,
-    outputPricePerMillion: 15,
-    supportsTools: true,
-    supportsRemoteMcp: true,
-    supportsAdaptiveThinking: true,
-    badges: [{ type: 'discount', value: '−40%' }],
-  },
-  {
-    id: 'claude-haiku-4-5',
-    name: 'Claude Haiku 4.5',
+    id: 'claude-opus-4-8',
+    name: 'Claude Opus 4.8',
     description:
-      'Fastest and cheapest. Fine for simple lookups; unreliable on multi-step campaign work.',
+      'The stronger model, for complex or high-stakes campaign work. Costs about two-thirds more than Sonnet 5.',
     provider: 'anthropic',
-    inputPricePerMillion: 1,
-    outputPricePerMillion: 5,
+    inputPricePerMillion: 5,
+    outputPricePerMillion: 25,
     supportsTools: true,
     supportsRemoteMcp: true,
-    // Haiku 4.5 predates adaptive thinking and rejects the parameter; it runs
-    // with no thinking config at all.
-    supportsAdaptiveThinking: false,
-    badges: [{ type: 'discount', value: '−80%' }],
+    supportsAdaptiveThinking: true,
+    badges: [{ type: 'premium', value: '+67%' }],
   },
 ];
 
