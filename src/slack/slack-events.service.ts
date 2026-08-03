@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { AiService } from '../ai/ai.service';
-import { MessageRole } from '../common/enums';
+import { MessageRole, UserRole } from '../common/enums';
 import { MessagesService } from '../memory/messages.service';
 import { UsersService } from '../users/users.service';
 import { WorkspacesService } from '../workspaces/workspaces.service';
@@ -89,9 +89,33 @@ export class SlackEventsService {
     }
 
     try {
-      const member = message.user
+      let member = message.user
         ? await this.usersService.findBySlackIdentity(workspace.id, message.user)
         : null;
+      // A sender with no member row yet (they messaged before ever signing in)
+      // is provisioned from their Slack profile, so the run knows who is asking
+      // and their private connections resolve — otherwise they would silently
+      // run as an anonymous member seeing only shared team accounts.
+      if (!member && message.user) {
+        try {
+          const profile = await this.slackService.getUserProfile(botToken, message.user);
+          member = await this.usersService.upsertFromSlack({
+            workspaceId: workspace.id,
+            slackUserId: message.user,
+            name: profile.name,
+            email: profile.email,
+            avatarUrl: profile.avatarUrl,
+            // Never let a merely-messaging sender become the founding admin.
+            role: UserRole.MEMBER,
+          });
+        } catch (error) {
+          this.logger.warn(
+            `Could not provision Slack sender ${message.user}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
 
       // Load prior turns BEFORE persisting this one, so the new prompt isn't
       // duplicated in its own history. Both calls are best-effort inside

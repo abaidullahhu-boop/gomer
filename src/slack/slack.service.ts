@@ -350,6 +350,17 @@ export class SlackService {
     };
   }
 
+  /**
+   * A member's Slack profile via users.info, for provisioning a workspace user
+   * from an inbound message. Falls back to the bare id when the call fails.
+   */
+  getUserProfile(
+    botToken: string,
+    slackUserId: string,
+  ): Promise<{ name: string; email: string | null; avatarUrl: string | null }> {
+    return this.fetchUserProfile(slackUserId, botToken);
+  }
+
   private async fetchUserProfile(
     slackUserId: string,
     botToken: string | null,

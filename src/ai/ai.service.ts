@@ -23,7 +23,10 @@ import {
 } from './providers/provider.interface';
 import { WorkspacesService } from '../workspaces/workspaces.service';
 import { CreditEventType } from '../common/enums';
-import { IntegrationsService } from '../integrations/integrations.service';
+import {
+  ConnectedIntegrationView,
+  IntegrationsService,
+} from '../integrations/integrations.service';
 import { MetaAdsService } from '../integrations/meta-ads.service';
 import { ConversationTurn } from '../memory/messages.service';
 import { WorkspaceMemoryService } from '../memory/workspace-memory.service';
@@ -94,6 +97,10 @@ You can also answer questions about this workspace itself — how many members i
 You have a durable workspace memory that persists across every conversation. When the user states a lasting fact, preference, target, or standing instruction (e.g. "our target ROAS is 3", "always report in EUR"), save it with remember_fact — silently, without announcing it. Saved facts appear in your context under "Workspace memory"; treat them as current truth. Update a fact by re-saving its key; delete a retracted one with forget_fact. Never save transient, one-off request details.
 
 When the user asks what you can do — overall or about a specific connected app — give a structured, scannable answer rather than a one-liner: confirm which relevant app(s) are connected, name the specific account when a quick read-only tool call can tell you (e.g. list Meta ad accounts to name the account and currency), group the concrete capabilities into a few labelled sections, and finish with 2–3 example prompts the user could send. This capability-overview case is the one exception to the brevity rule below.
+
+Connected apps are listed below annotated with whose account each one is: the requester's own private account, or a shared team account labelled with the member who connected it. Ownership is load-bearing. When the user asks for THEIR OWN data ("my email", "my calendar", "my repos") and the only matching app is a shared team account connected by a different member, do not silently read it — say whose account it is and confirm that is what they want first. Never present another member's account or its contents as if it were the user's own. If an app the user names is not in the list, it is not connected for them in this workspace — say so plainly rather than guessing why.
+
+When greeting someone or introducing yourself (e.g. they just say "hi"), ground the intro in what is actually available to this specific person: the connected apps listed below — their own accounts first, then shared team ones — plus building Spaces and answering workspace questions. Do not recite a generic pitch or lead with capabilities whose apps are not connected.
 
 Your replies are delivered in Slack, so format for Slack's mrkdwn — not Markdown: use *single asterisks* for bold (never **double**, which Slack shows literally), _underscores_ for italics, and a leading "• " for bullets. Don't use # headings or [text](url) links; write links as <https://example.com|label>.
 
@@ -366,16 +373,43 @@ export class AiService {
 
     // Name the connected apps in the system prompt so the model can accurately
     // confirm what's usable right now (e.g. for a "what can you do?" answer)
-    // instead of guessing. Meta stores no appName, so label it explicitly.
-    const connectedAppNames = [
-      ...new Set([
-        ...connected.filter((c) => c.provider === 'pipedream').map((c) => c.appName ?? c.appSlug),
-        ...(hasMeta ? ['Meta Ads'] : []),
-      ]),
-    ].filter(Boolean);
-    let system = connectedAppNames.length
-      ? `${SYSTEM_PROMPT}\n\nApps connected and usable right now: ${connectedAppNames.join(', ')}.`
-      : SYSTEM_PROMPT;
+    // instead of guessing. Each app is annotated with whose account it is —
+    // the requester's own private account vs a shared team account and who
+    // connected it — so "check my gmail" against a teammate's shared account
+    // gets attributed instead of being presented as the requester's own inbox.
+    // Meta stores no appName, so label it explicitly.
+    const describeConnection = (connection: ConnectedIntegrationView): string => {
+      const label =
+        connection.provider === 'meta' ? 'Meta Ads' : connection.appName || connection.appSlug;
+      const account = connection.nickname ?? connection.accountName;
+      const ownership =
+        connection.accessLevel === 'private'
+          ? "the requester's own private account"
+          : userId && connection.userId === userId
+            ? 'shared team account, connected by the requester'
+            : `shared team account${connection.userName ? `, connected by ${connection.userName}` : ''}`;
+      return `${label} (${ownership}${account ? `; account: ${account}` : ''})`;
+    };
+    const connectionDescriptions = [...new Set(connected.map(describeConnection))];
+    let system = connectionDescriptions.length
+      ? `${SYSTEM_PROMPT}\n\nApps connected and usable right now:\n${connectionDescriptions
+          .map((line) => `• ${line}`)
+          .join('\n')}`
+      : `${SYSTEM_PROMPT}\n\nNo apps are connected in this workspace yet.`;
+    // Tell the model who it is serving, so the ownership annotations above have
+    // a referent. An unmatched Slack sender is flagged explicitly: their private
+    // connections are unreachable, and the model must not paper over that by
+    // treating shared team accounts as theirs.
+    const requester = userId ? await this.usersService.findById(userId) : null;
+    if (requester) {
+      system += `\n\nThe requester is ${requester.name}, a member of this workspace.`;
+    } else if (options.sourceName === 'slack') {
+      system +=
+        `\n\nThe requester could not be matched to a workspace member account, so only shared ` +
+        `team apps are listed — anything they connected privately is not reachable in this run. ` +
+        `If they ask for personal data or for an app that is missing, tell them to sign in with ` +
+        `Slack at <${appUrl}|${appUrl}> so their account and private connections link up.`;
+    }
     // Durable workspace facts ride along on every run so the model has standing
     // context (targets, preferences) without a tool call. Best-effort: null on
     // a read failure or an empty memory.
