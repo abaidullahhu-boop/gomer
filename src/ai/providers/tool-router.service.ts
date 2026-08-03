@@ -1,11 +1,17 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { LlmProvider, ToolSpec } from './provider.interface';
+import { LlmProvider, RemoteMcpServer, ToolSpec } from './provider.interface';
 
 /**
  * Below this many bridged tools, routing is skipped: the prompt savings do not
  * justify an extra provider round-trip, and sending them all is cheap enough.
  */
 const ROUTE_THRESHOLD = 20;
+
+/**
+ * Below this many connected servers there is nothing to route: with one server
+ * the choice is send-it-or-fail, and the round-trip costs more than it saves.
+ */
+const SERVER_ROUTE_THRESHOLD = 1;
 
 /**
  * Hard ceiling on how many tool descriptions go into the router prompt. A
@@ -28,6 +34,27 @@ const ROUTER_SYSTEM_PROMPT =
   'before the main action. Only return an empty array if the request plainly needs ' +
   'no tool at all (e.g. a greeting or a general question). Respond with the JSON ' +
   'array only — no prose, no code fences.';
+
+const SERVER_ROUTER_SYSTEM_PROMPT =
+  'You are an app selector. You are given a user request, the built-in tools the ' +
+  'assistant already has, and a list of apps the workspace has connected, each as ' +
+  '"id (name)". Return the connected apps the request actually needs, as a JSON ' +
+  'array of app ids and nothing else.\n\n' +
+  'Built-in tools take precedence. If a built-in tool can serve the request, no ' +
+  'connected app is needed for it. Do not select an app merely because it is ' +
+  'topically related to something a built-in tool already covers — select it only ' +
+  'when the request clearly needs that specific app, such as when the user names ' +
+  'it or asks for data only that app holds.\n\n' +
+  'This matters most when a connected app overlaps a built-in tool: a request ' +
+  'about ads, campaigns, spend, or return on ad spend is served by the built-in ' +
+  'tools unless the user names a different platform. Resolve that ambiguity in ' +
+  'favour of the built-in and return no app — a user who meant the connected app ' +
+  'will say so.\n\n' +
+  'Attaching an app costs tens of thousands of tokens, so an unnecessary one is ' +
+  'expensive — but an app the task genuinely needs is worth far more than it ' +
+  'costs. When the request plainly needs one, include it, along with any app ' +
+  'needed to gather ids or context first. Return an empty array when no connected ' +
+  'app is needed. Respond with the JSON array only — no prose, no code fences.';
 
 /**
  * Picks which bridged tools are worth sending for a given message.
@@ -108,6 +135,103 @@ export class ToolRouterService {
 
     this.logger.log(`Tool router kept ${selected.length}/${candidates.length} tools for this run`);
     return selected;
+  }
+
+  /**
+   * The same idea as {@link selectRelevant}, one level up: which connected apps
+   * to attach at all.
+   *
+   * On the server-side MCP path we never see individual tool schemas — the
+   * provider fetches them itself — so there is nothing to filter tool by tool.
+   * Dropping a whole server is the only lever, and it is a large one: each app's
+   * schemas are tens of thousands of tokens that ride on every turn of the run.
+   *
+   * Selection preserves the caller's order, so two messages that pick the same
+   * apps render a byte-identical prefix and can share a prompt cache entry.
+   *
+   * Returns null to mean "send them all", exactly as {@link selectRelevant} does.
+   */
+  async selectRelevantServers(
+    provider: LlmProvider,
+    model: string,
+    message: string,
+    servers: RemoteMcpServer[],
+    localTools: ToolSpec[] = [],
+  ): Promise<RemoteMcpServer[] | null> {
+    if (servers.length <= SERVER_ROUTE_THRESHOLD) return null;
+
+    const catalog = servers
+      .map((server) => `- ${server.appSlug} (${this.humanise(server.appSlug)})`)
+      .join('\n');
+    // Names only. They are self-describing (`meta_ads_list_campaigns`,
+    // `verify_roas`), and full descriptions would cost more than the decision
+    // they inform. Without this the router cannot tell that a request about
+    // campaigns or ROAS is already covered, and reflexively attaches whichever
+    // connected app looks topically closest — the expensive mistake here.
+    const builtIn = localTools.map((tool) => tool.name).join(', ');
+
+    let text: string;
+    try {
+      const response = await provider.create({
+        model,
+        system: SERVER_ROUTER_SYSTEM_PROMPT,
+        // Deliberately no tools and no servers: attaching the very connectors we
+        // are deciding about would cost the tokens this exists to save.
+        tools: [],
+        mcpServers: [],
+        capabilities: { adaptiveThinking: false },
+        messages: [
+          {
+            role: 'user',
+            content:
+              `Request:\n${message}\n\n` +
+              (builtIn ? `Built-in tools (no app needed for these):\n${builtIn}\n\n` : '') +
+              `Connected apps:\n${catalog}\n\n` +
+              `Return the JSON array of app ids this request needs.`,
+          },
+        ],
+      });
+      text = response.text;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`App routing failed, attaching every connected app: ${detail}`);
+      return null;
+    }
+
+    const slugs = this.parseNames(text);
+    if (!slugs) {
+      this.logger.warn('App router returned an unparseable answer; attaching every connected app');
+      return null;
+    }
+
+    // Unlike tool routing, an explicitly empty answer is trusted rather than
+    // treated as a failure. It is both the most common case and the most
+    // valuable one: anything Gomer answers with local tools alone (most Meta Ads
+    // work) needs no connector, and attaching none is the largest saving there
+    // is. The prompt asks for `[]` in exactly this case, which is what separates
+    // it from a reply we simply could not read.
+    if (!slugs.length) {
+      this.logger.log(`App router attached none of ${servers.length} connected apps for this run`);
+      return [];
+    }
+
+    const wanted = new Set(slugs);
+    const selected = servers.filter((server) => wanted.has(server.appSlug));
+
+    // Every name came back hallucinated, so there is no way to tell what was
+    // meant. Falling back costs tokens but never capability.
+    if (!selected.length) return null;
+
+    this.logger.log(
+      `App router kept ${selected.length}/${servers.length} connected apps for this run` +
+        ` (${selected.map((server) => server.appSlug).join(', ')})`,
+    );
+    return selected;
+  }
+
+  /** `google_sheets` → `google sheets`, so the model has a plain-English hint. */
+  private humanise(slug: string): string {
+    return slug.replace(/[_-]+/g, ' ').trim();
   }
 
   private previewDescription(description: string): string {

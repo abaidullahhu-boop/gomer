@@ -41,6 +41,9 @@ import {
   META_ADS_DELETE_AD,
   META_ADS_DELETE_AD_SET,
   META_ADS_DELETE_CAMPAIGN,
+  META_ADS_DUPLICATE_AD,
+  META_ADS_DUPLICATE_AD_SET,
+  META_ADS_DUPLICATE_CAMPAIGN,
   META_ADS_GET_INSIGHTS,
   META_ADS_LIST_AD_ACCOUNTS,
   META_ADS_LIST_AD_SETS,
@@ -155,13 +158,16 @@ const META_WRITE_LABELS: Record<string, string> = {
   [META_ADS_CREATE_CAMPAIGN]: 'Create campaign',
   [META_ADS_UPDATE_CAMPAIGN]: 'Update campaign',
   [META_ADS_DELETE_CAMPAIGN]: 'Delete campaign',
+  [META_ADS_DUPLICATE_CAMPAIGN]: 'Duplicate campaign',
   [META_ADS_CREATE_AD_SET]: 'Create ad set',
   [META_ADS_UPDATE_AD_SET]: 'Update ad set',
   [META_ADS_DELETE_AD_SET]: 'Delete ad set',
+  [META_ADS_DUPLICATE_AD_SET]: 'Duplicate ad set',
   [META_ADS_CREATE_AD_CREATIVE]: 'Create ad creative',
   [META_ADS_CREATE_AD]: 'Create ad',
   [META_ADS_UPDATE_AD]: 'Update ad',
   [META_ADS_DELETE_AD]: 'Delete ad',
+  [META_ADS_DUPLICATE_AD]: 'Duplicate ad',
 };
 
 /**
@@ -306,7 +312,7 @@ export class AiService {
     // user (a private account is unreachable from another member's run); Meta
     // connections are their own OAuth grants, resolved separately below.
     const connected = (
-      await this.integrationsService.findVisibleForUser(workspaceId, userId ?? '')
+      await this.integrationsService.findVisibleForUser(workspaceId, userId)
     ).filter((c) => c.isActive);
     const pipedreamConnected = connected.filter((c) => c.provider === 'pipedream');
     const teamSlugs = [
@@ -462,6 +468,22 @@ export class AiService {
         bridged.tools,
       );
       bridged = bridged.narrowTo(relevant ?? bridged.tools, MAX_BRIDGED_TOOLS);
+    } else if (mcpServers.length) {
+      // Server-side MCP hides the individual schemas from us, so the same saving
+      // has to be taken a level up: attach only the apps this message plausibly
+      // needs. An app the provider never connects to is an app whose schemas are
+      // never fetched, and those schemas are the bulk of what a run is billed for.
+      const relevant = await this.toolRouter.selectRelevantServers(
+        provider,
+        model.id,
+        prompt,
+        mcpServers,
+        // Meta Ads, ROAS and memory are served locally, and the router has to be
+        // told so: otherwise a question about campaigns pulls in whichever ad
+        // connector looks related and pays for its schemas unused.
+        localTools,
+      );
+      if (relevant) mcpServers = relevant;
     }
     let tools: ToolSpec[] = [...localTools, ...(bridged?.tools ?? [])];
     appSlugs = [...new Set([...reachableApps, ...(hasMeta ? ['meta_ads'] : [])])];
@@ -947,7 +969,7 @@ export class AiService {
     }
 
     try {
-      const token = await this.integrationsService.getMetaAccessToken(workspaceId, userId ?? '');
+      const token = await this.integrationsService.getMetaAccessToken(workspaceId, userId);
       if (!token) {
         return {
           type: 'tool_result',
@@ -1000,7 +1022,7 @@ export class AiService {
     input: Record<string, unknown>,
   ): Promise<{ ok: boolean; summary: string }> {
     try {
-      const token = await this.integrationsService.getMetaAccessToken(workspaceId, userId ?? '');
+      const token = await this.integrationsService.getMetaAccessToken(workspaceId, userId);
       if (!token) {
         return { ok: false, summary: 'No active Meta Ads connection is available.' };
       }
@@ -1070,6 +1092,12 @@ export class AiService {
         });
       } else if (toolUse.name === META_ADS_DELETE_CAMPAIGN) {
         result = await this.metaAds.deleteCampaign(token, String(input.campaign_id));
+      } else if (toolUse.name === META_ADS_DUPLICATE_CAMPAIGN) {
+        result = await this.metaAds.duplicateCampaign(token, {
+          campaignId: String(input.campaign_id),
+          deepCopy: input.deep_copy as boolean | undefined,
+          renameSuffix: input.rename_suffix as string | undefined,
+        });
       } else if (toolUse.name === META_ADS_LIST_AD_SETS) {
         result = await this.metaAds.listAdSets(token, String(input.campaign_id));
       } else if (toolUse.name === META_ADS_CREATE_AD_SET) {
@@ -1092,6 +1120,13 @@ export class AiService {
         });
       } else if (toolUse.name === META_ADS_DELETE_AD_SET) {
         result = await this.metaAds.deleteAdSet(token, String(input.ad_set_id));
+      } else if (toolUse.name === META_ADS_DUPLICATE_AD_SET) {
+        result = await this.metaAds.duplicateAdSet(token, {
+          adSetId: String(input.ad_set_id),
+          campaignId: input.campaign_id as string | undefined,
+          deepCopy: input.deep_copy as boolean | undefined,
+          renameSuffix: input.rename_suffix as string | undefined,
+        });
       } else if (toolUse.name === META_ADS_LIST_ADS) {
         result = await this.metaAds.listAds(token, String(input.ad_set_id));
       } else if (toolUse.name === META_ADS_CREATE_AD_CREATIVE) {
@@ -1120,6 +1155,12 @@ export class AiService {
         });
       } else if (toolUse.name === META_ADS_DELETE_AD) {
         result = await this.metaAds.deleteAd(token, String(input.ad_id));
+      } else if (toolUse.name === META_ADS_DUPLICATE_AD) {
+        result = await this.metaAds.duplicateAd(token, {
+          adId: String(input.ad_id),
+          adSetId: input.ad_set_id as string | undefined,
+          renameSuffix: input.rename_suffix as string | undefined,
+        });
       } else if (toolUse.name === META_ADS_LIST_PAGES) {
         result = await this.metaAds.listPages(token);
       } else if (toolUse.name === META_ADS_SEARCH_INTERESTS) {

@@ -74,8 +74,8 @@ export class RoasService {
     params: VerifyRoasParams,
   ): Promise<VerifiedRoas> {
     const [metaToken, stripeKey] = await Promise.all([
-      this.integrationsService.getMetaAccessToken(workspaceId, userId ?? ''),
-      this.integrationsService.getStripeApiKey(workspaceId, userId ?? ''),
+      this.integrationsService.getMetaAccessToken(workspaceId, userId),
+      this.integrationsService.getStripeApiKey(workspaceId, userId),
     ]);
     if (!metaToken) throw new Error('No active Meta Ads connection is available.');
     if (!stripeKey) throw new Error('No active Stripe connection is available.');

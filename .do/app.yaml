@@ -73,6 +73,16 @@ services:
       - key: META_REDIRECT_URI
         scope: RUN_TIME
         value: ${APP_URL}/api/integrations/meta/callback
+      # Meta's hosted MCP server. Without this the Meta connect flow refuses to
+      # start (MetaMcpService logs "META_MCP_URL is not set" and every authorize
+      # request fails), so an unset value silently breaks Meta Ads onboarding.
+      - key: META_MCP_URL
+        scope: RUN_TIME
+        value: https://mcp.facebook.com/ads
+      # Space-separated ad scopes requested during consent.
+      - key: META_SCOPES
+        scope: RUN_TIME
+        value: ads_management ads_read business_management
       # ---- Secrets: replace the placeholder values in the DO dashboard ----
       - key: JWT_SECRET
         scope: RUN_TIME

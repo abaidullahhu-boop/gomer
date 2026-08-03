@@ -215,7 +215,7 @@ export class RulesService {
   private async evaluateRule(rule: AdRule): Promise<RuleRunReport> {
     const token = await this.integrationsService.getMetaAccessToken(
       rule.workspaceId,
-      rule.createdByUserId ?? '',
+      rule.createdByUserId,
     );
     if (!token) {
       return this.report(rule, `⚠️ Rule *${rule.name}* skipped: no active Meta Ads connection.`);
