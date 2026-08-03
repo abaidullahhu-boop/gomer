@@ -83,6 +83,16 @@ export class MetaMcpService implements OnModuleInit {
         'META_MCP_URL is not set; Meta Ads connect flows will fail until it is configured.',
       );
     }
+    // Meta advertises a `registration_endpoint` but rejects every request to it
+    // with `invalid_client_metadata: Dynamic registration is not available for
+    // this client`, so the DCR fallback in getClient() can never succeed and our
+    // own app id is mandatory. Surface that at boot rather than on a user's click.
+    if (!this.cfg.oauthClientId) {
+      this.logger.warn(
+        'META_OAUTH_CLIENT_ID is not set; Meta rejects dynamic client registration, ' +
+          'so every Meta Ads connect attempt will fail until an app id is configured.',
+      );
+    }
   }
 
   /** Generate a PKCE verifier and its S256 challenge. */
