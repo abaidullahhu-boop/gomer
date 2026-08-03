@@ -88,7 +88,7 @@ export class MonitoringService {
     const slackChannel = await this.resolveAlertsChannel(workspaceId);
     if (!slackChannel) return [];
 
-    const token = await this.integrationsService.getMetaAccessToken(workspaceId, '');
+    const token = await this.integrationsService.getMetaAccessToken(workspaceId, null);
     if (!token) return [];
 
     const accounts = (await this.metaAds.listAdAccounts(token)).data.slice(0, MAX_ACCOUNTS);

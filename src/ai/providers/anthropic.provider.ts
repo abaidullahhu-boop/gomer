@@ -19,6 +19,13 @@ const MCP_BETA = 'mcp-client-2025-11-20';
 const MAX_TOKENS = 8000;
 
 /**
+ * Marks a cache breakpoint: everything rendered before it is stored and, on a
+ * later request with a byte-identical prefix, billed at a tenth of the input
+ * rate instead of full price.
+ */
+const CACHE: Anthropic.Beta.BetaCacheControlEphemeral = { type: 'ephemeral' };
+
+/**
  * Anthropic adapter. Connected apps are handed over as server-side MCP servers,
  * so Anthropic runs those tools itself and we only execute our own local tools —
  * the arrangement Gomer has always used, kept intact.
@@ -76,8 +83,11 @@ export class AnthropicProvider implements LlmProvider {
         ...(request.capabilities.adaptiveThinking
           ? { thinking: { type: 'adaptive' as const } }
           : {}),
-        system: request.system,
-        messages: this.toAnthropicMessages(request.messages),
+        // Tools render before the system prompt and both are identical on every
+        // turn of a run, so one breakpoint here caches that entire prefix — the
+        // bulk of what we send. Volatile content (the transcript) comes after it.
+        system: [{ type: 'text', text: request.system, cache_control: CACHE }],
+        messages: this.withTranscriptCache(this.toAnthropicMessages(request.messages)),
         ...(tools.length ? { tools } : {}),
         ...(mcpServers.length ? { mcp_servers: mcpServers } : {}),
         betas: [MCP_BETA],
@@ -126,6 +136,33 @@ export class AnthropicProvider implements LlmProvider {
     });
   }
 
+  /**
+   * Extends the cache over the transcript by marking its final block, so each
+   * pass of the agent loop reads back the turns the previous pass wrote instead
+   * of re-paying for the whole conversation.
+   *
+   * Only user and tool-result turns are marked: assistant turns replay from
+   * their original blocks, and Anthropic rejects a thinking block that has been
+   * edited in any way, including by adding cache_control to it.
+   */
+  private withTranscriptCache(
+    messages: Anthropic.Beta.BetaMessageParam[],
+  ): Anthropic.Beta.BetaMessageParam[] {
+    const last = messages[messages.length - 1];
+    if (!last || last.role !== 'user') return messages;
+    const blocks: Anthropic.Beta.BetaContentBlockParam[] =
+      typeof last.content === 'string'
+        ? [{ type: 'text', text: last.content }]
+        : [...last.content];
+    const tail = blocks[blocks.length - 1];
+    // Not every block type carries cache_control (a thinking block rejects it
+    // outright). Text and tool results are the only ones a user turn of ours
+    // ever ends on; anything else simply goes uncached rather than erroring.
+    if (tail?.type !== 'text' && tail?.type !== 'tool_result') return messages;
+    blocks[blocks.length - 1] = { ...tail, cache_control: CACHE };
+    return [...messages.slice(0, -1), { role: 'user', content: blocks }];
+  }
+
   private fromAnthropicMessage(response: Anthropic.Beta.BetaMessage): ProviderResponse {
     let text = '';
     const toolCalls: ToolCall[] = [];
@@ -154,12 +191,23 @@ export class AnthropicProvider implements LlmProvider {
     if (response.stop_reason === 'tool_use' && toolCalls.length) stopReason = 'tool_use';
     else if (response.stop_reason === 'pause_turn') stopReason = 'pause';
 
+    // Anthropic reports cached tokens separately and leaves them out of
+    // `input_tokens`. Summing keeps the number meaning "size of the prompt we
+    // sent", which is what usage and credit charging have always recorded — the
+    // caching saving lands on our side of the bill, not the workspace's.
+    const cacheWrites = response.usage.cache_creation_input_tokens ?? 0;
+    const cacheReads = response.usage.cache_read_input_tokens ?? 0;
+    this.logger.log(
+      `Anthropic usage: ${response.usage.input_tokens} uncached, ` +
+        `${cacheWrites} cache write, ${cacheReads} cache read`,
+    );
+
     return {
       text,
       toolCalls,
       remoteActivity,
       usage: {
-        inputTokens: response.usage.input_tokens,
+        inputTokens: response.usage.input_tokens + cacheWrites + cacheReads,
         outputTokens: response.usage.output_tokens,
       },
       stopReason,

@@ -78,11 +78,12 @@ export class IntegrationsService {
 
   /**
    * List the accounts a member may see: every `team` account in the workspace
-   * plus their own `private` accounts.
+   * plus their own `private` accounts. A null `userId` is a userless run (a
+   * system task, a monitoring sweep) and sees team accounts only.
    */
   async findVisibleForUser(
     workspaceId: string,
-    userId: string,
+    userId: string | null,
   ): Promise<ConnectedIntegrationView[]> {
     const rows = await this.integrationRepository
       .createQueryBuilder('integration')
@@ -90,10 +91,8 @@ export class IntegrationsService {
       .where('integration.workspaceId = :workspaceId', { workspaceId })
       .andWhere(
         new Brackets((qb) => {
-          qb.where('integration.accessLevel = :team', { team: 'team' }).orWhere(
-            'integration.userId = :userId',
-            { userId },
-          );
+          qb.where('integration.accessLevel = :team', { team: 'team' });
+          if (userId) qb.orWhere('integration.userId = :userId', { userId });
         }),
       )
       .orderBy('integration.connectedAt', 'DESC')
@@ -414,7 +413,10 @@ export class IntegrationsService {
    * private ones, active only. Shared by the MCP-server build and the native
    * Meta Ads token resolver.
    */
-  private visibleMetaIntegrations(workspaceId: string, userId: string): Promise<Integration[]> {
+  private visibleMetaIntegrations(
+    workspaceId: string,
+    userId: string | null,
+  ): Promise<Integration[]> {
     return this.integrationRepository
       .createQueryBuilder('integration')
       .where('integration.workspaceId = :workspaceId', { workspaceId })
@@ -422,10 +424,8 @@ export class IntegrationsService {
       .andWhere('integration.isActive = true')
       .andWhere(
         new Brackets((qb) => {
-          qb.where('integration.accessLevel = :team', { team: 'team' }).orWhere(
-            'integration.userId = :userId',
-            { userId },
-          );
+          qb.where('integration.accessLevel = :team', { team: 'team' });
+          if (userId) qb.orWhere('integration.userId = :userId', { userId });
         }),
       )
       .getMany();
@@ -438,7 +438,7 @@ export class IntegrationsService {
    * deterministic server-side computation rather than MCP round-trips. Returns
    * null when no usable Stripe account is connected.
    */
-  async getStripeApiKey(workspaceId: string, userId: string): Promise<string | null> {
+  async getStripeApiKey(workspaceId: string, userId: string | null): Promise<string | null> {
     const visible = (await this.findVisibleForUser(workspaceId, userId)).filter(
       (row) =>
         row.isActive &&
@@ -486,7 +486,7 @@ export class IntegrationsService {
    * which call the Marketing API directly (Meta's hosted MCP is allowlist-gated
    * and rejects our token). Returns null when there's no usable Meta connection.
    */
-  async getMetaAccessToken(workspaceId: string, userId: string): Promise<string | null> {
+  async getMetaAccessToken(workspaceId: string, userId: string | null): Promise<string | null> {
     const rows = await this.visibleMetaIntegrations(workspaceId, userId);
     for (const row of rows) {
       const token = await this.ensureFreshMetaToken(row);
