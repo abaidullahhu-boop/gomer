@@ -23,7 +23,8 @@
     "probe:cache": "TS_NODE_COMPILER_OPTIONS='{\"module\":\"commonjs\",\"moduleResolution\":\"node\"}' ts-node -T scripts/cache-probe.ts",
     "credits": "TS_NODE_COMPILER_OPTIONS='{\"module\":\"commonjs\",\"moduleResolution\":\"node\"}' ts-node -T scripts/grant-credits.ts",
     "tool:sizes": "TS_NODE_COMPILER_OPTIONS='{\"module\":\"commonjs\",\"moduleResolution\":\"node\"}' ts-node -T scripts/tool-sizes.ts",
-    "probe:route": "TS_NODE_COMPILER_OPTIONS='{\"module\":\"commonjs\",\"moduleResolution\":\"node\"}' ts-node -T scripts/route-probe.ts"
+    "probe:route": "TS_NODE_COMPILER_OPTIONS='{\"module\":\"commonjs\",\"moduleResolution\":\"node\"}' ts-node -T scripts/route-probe.ts",
+    "catalog:build": "TS_NODE_COMPILER_OPTIONS='{\"module\":\"commonjs\",\"moduleResolution\":\"node\"}' ts-node -T scripts/build-integration-catalog.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.104.1",
