@@ -15,6 +15,20 @@ const META_STATE_TTL_SECONDS = 600;
 /** Redis key prefix for pending Meta OAuth handshakes, keyed by `state`. */
 const META_STATE_PREFIX = 'meta:oauth:';
 
+/** Redis key prefix for a cached app action list, keyed by app slug. */
+const TOOLS_CACHE_PREFIX = 'pd:tools:';
+/**
+ * How long a cached action list is served without revalidating. An app's actions
+ * change on Pipedream's release cadence, not ours, so a day is generous.
+ */
+const TOOLS_CACHE_FRESH_MS = 24 * 60 * 60 * 1000;
+/**
+ * How long the entry physically survives — deliberately far longer than it stays
+ * fresh, because an expired-but-present list is what a Pipedream outage falls
+ * back to.
+ */
+const TOOLS_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60;
+
 /** The pending-connect context stashed in Redis between authorize and callback. */
 interface MetaOAuthState {
   workspaceId: string;
@@ -168,14 +182,81 @@ export class IntegrationsService {
     return this.pipedream.listApps(query, after);
   }
 
-  /** List the actions/tools a given app exposes, for the "what can it do?" UI. */
-  listAppTools(appSlug: string, after?: string): Promise<{ tools: AppTool[]; after?: string }> {
+  /**
+   * Every action a given app exposes, for the "what can it do?" UI.
+   *
+   * An app's action list is a property of Pipedream's catalogue, not of this
+   * workspace, so it is cached once globally rather than refetched on each visit
+   * — the panel was previously costing a live Pipedream round trip every time
+   * anyone opened an integration. A stale entry is kept well past the point it
+   * goes cold and served when Pipedream is unreachable, so an outage degrades to
+   * a slightly dated list instead of an error where the capabilities should be.
+   */
+  async listAppTools(appSlug: string): Promise<{ tools: AppTool[] }> {
     // Meta Ads is served by our own native tools (not Pipedream), so its
     // capability list comes from the local tool definitions, not the catalogue.
     if (appSlug === 'meta_ads') {
-      return Promise.resolve({ tools: this.metaAdsTools() });
+      return { tools: this.metaAdsTools() };
     }
-    return this.pipedream.listAppTools(appSlug, after);
+
+    const cached = await this.readCachedTools(appSlug);
+    if (cached && Date.now() - cached.fetchedAt < TOOLS_CACHE_FRESH_MS) {
+      return { tools: cached.tools };
+    }
+
+    try {
+      const { tools } = await this.pipedream.listAppTools(appSlug);
+      await this.writeCachedTools(appSlug, tools);
+      return { tools };
+    } catch (error) {
+      // Cold cache means there is nothing to fall back to — let the failure
+      // surface. Otherwise the stale list is far better than an error card.
+      if (!cached) throw error;
+      this.logger.warn(
+        `Serving stale tool list for ${appSlug}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return { tools: cached.tools };
+    }
+  }
+
+  /** Read a cached action list, tolerating a missing or unparseable entry. */
+  private async readCachedTools(
+    appSlug: string,
+  ): Promise<{ tools: AppTool[]; fetchedAt: number } | null> {
+    try {
+      const raw = await this.redis.get(`${TOOLS_CACHE_PREFIX}${appSlug}`);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as { tools?: AppTool[]; fetchedAt?: number };
+      if (!Array.isArray(parsed.tools) || typeof parsed.fetchedAt !== 'number') return null;
+      return { tools: parsed.tools, fetchedAt: parsed.fetchedAt };
+    } catch (error) {
+      this.logger.warn(
+        `Failed to read cached tools for ${appSlug}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return null;
+    }
+  }
+
+  /** Cache an action list. Best-effort: a cache write must never fail the request. */
+  private async writeCachedTools(appSlug: string, tools: AppTool[]): Promise<void> {
+    try {
+      await this.redis.set(
+        `${TOOLS_CACHE_PREFIX}${appSlug}`,
+        JSON.stringify({ tools, fetchedAt: Date.now() }),
+        'EX',
+        TOOLS_CACHE_TTL_SECONDS,
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Failed to cache tools for ${appSlug}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
 
   /** The native Meta Ads tools mapped to the UI's AppTool shape. */

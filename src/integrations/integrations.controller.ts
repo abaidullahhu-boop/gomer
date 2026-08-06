@@ -42,13 +42,14 @@ export class IntegrationsController {
     return this.integrationsService.listApps(query, after);
   }
 
-  /** List the actions/tools an app exposes, so the UI can show its capabilities. */
+  /**
+   * Every action an app exposes, so the UI can show its capabilities. Returns the
+   * complete list — the service pages through Pipedream and caches the result, so
+   * there is no cursor for the client to follow.
+   */
   @Get(':appSlug/tools')
-  listAppTools(
-    @Param('appSlug') appSlug: string,
-    @Query('after') after?: string,
-  ): Promise<{ tools: AppTool[]; after?: string }> {
-    return this.integrationsService.listAppTools(appSlug, after);
+  listAppTools(@Param('appSlug') appSlug: string): Promise<{ tools: AppTool[] }> {
+    return this.integrationsService.listAppTools(appSlug);
   }
 
   /** Mint a single-use Pipedream Connect token for the current member's scope. */

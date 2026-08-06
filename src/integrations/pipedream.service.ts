@@ -22,6 +22,16 @@ const REQUEST_OPTIONS = { timeoutInSeconds: 20 };
 /** Pipedream's managed remote MCP server — one logical server per connected app. */
 const PIPEDREAM_MCP_BASE_URL = 'https://remote.mcp.pipedream.net/v3';
 
+/** Actions requested per page when enumerating an app's tools. */
+const TOOL_PAGE_SIZE = 100;
+
+/**
+ * Ceiling on pages walked for one app's action list, so a runaway cursor cannot
+ * spin. At {@link TOOL_PAGE_SIZE} per page this covers far more actions than any
+ * real app exposes.
+ */
+const MAX_TOOL_PAGES = 20;
+
 /** A connected app exposed to an LLM as a Pipedream MCP server. */
 export interface PipedreamMcpServer {
   appSlug: string;
@@ -192,24 +202,39 @@ export class PipedreamService implements OnModuleInit {
   }
 
   /**
-   * List the actions an app exposes. These are the same components Pipedream's
+   * Every action an app exposes. These are the same components Pipedream's
    * remote MCP server turns into tools, so this answers "what can Gomer do with
-   * this app?" for the UI. Returns one page plus the cursor for the next.
+   * this app?" for the UI.
+   *
+   * Pages are followed here rather than by the caller: the UI wants the whole
+   * list at once, and the result is cached upstream, so paginating outward would
+   * multiply the round trips this exists to avoid. {@link MAX_TOOL_PAGES} bounds
+   * a pathological app rather than looping on a runaway cursor.
    */
-  listAppTools(appSlug: string, after?: string): Promise<{ tools: AppTool[]; after?: string }> {
+  listAppTools(appSlug: string): Promise<{ tools: AppTool[] }> {
     return this.run('actions.list', async (client) => {
-      const page = await client.actions.list(
-        { app: appSlug, after: after || undefined, limit: 100 },
-        REQUEST_OPTIONS,
-      );
-      return {
-        tools: page.data.map((action) => ({
-          key: action.key,
-          name: action.name,
-          description: action.description ?? undefined,
-        })),
-        after: page.hasNextPage() ? page.response.pageInfo?.endCursor : undefined,
-      };
+      const tools: AppTool[] = [];
+      let after: string | undefined;
+
+      for (let page = 0; page < MAX_TOOL_PAGES; page += 1) {
+        const result = await client.actions.list(
+          { app: appSlug, after: after || undefined, limit: TOOL_PAGE_SIZE },
+          REQUEST_OPTIONS,
+        );
+        tools.push(
+          ...result.data.map((action) => ({
+            key: action.key,
+            name: action.name,
+            description: action.description ?? undefined,
+          })),
+        );
+        if (!result.hasNextPage()) break;
+        after = result.response.pageInfo?.endCursor;
+        // A next-page flag with no cursor would otherwise refetch page one forever.
+        if (!after) break;
+      }
+
+      return { tools };
     });
   }
 
