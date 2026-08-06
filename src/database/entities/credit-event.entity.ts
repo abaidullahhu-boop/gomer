@@ -51,6 +51,20 @@ export class CreditEvent {
   @Column({ type: 'integer', default: 0 })
   outputTokens!: number;
 
+  /**
+   * The cached slices of {@link inputTokens} (already included in it). Broken
+   * out because a cache write and a cache read are billed to us at different
+   * rates than fresh input, so without them {@link providerCostUsd} cannot be
+   * reconstructed or re-derived if prices change. Zero on providers that report
+   * no cache split, which is indistinguishable from a run that cached nothing —
+   * both cost the same.
+   */
+  @Column({ type: 'integer', default: 0 })
+  cacheWriteTokens!: number;
+
+  @Column({ type: 'integer', default: 0 })
+  cacheReadTokens!: number;
+
   @Column({ type: 'varchar', length: 128 })
   model!: string;
 

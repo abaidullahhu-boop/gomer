@@ -46,6 +46,13 @@ export interface RecordUsageInput {
   /** Input and output are billed at different rates, so they are kept apart. */
   inputTokens: number;
   outputTokens: number;
+  /**
+   * The cached slices of `inputTokens`, when the provider reports them. They do
+   * not change what the workspace is charged — the caching saving is ours, not
+   * theirs — only what the run is recorded as having cost us.
+   */
+  cacheWriteTokens?: number;
+  cacheReadTokens?: number;
   /** Human label for what spent the credits, e.g. an app or feature name. */
   sourceName: string;
   type?: CreditEventType;
@@ -110,7 +117,12 @@ export class UsageService {
       return input.providerCostUsd;
     }
     const definition = this.definitionFor(input.model);
-    return definition ? listCostUsd(definition, input.inputTokens, input.outputTokens) : 0;
+    return definition
+      ? listCostUsd(definition, input.inputTokens, input.outputTokens, {
+          cacheWriteTokens: input.cacheWriteTokens,
+          cacheReadTokens: input.cacheReadTokens,
+        })
+      : 0;
   }
 
   /** Persist an immutable usage event, pricing tokens by the model's own rates. */
@@ -123,6 +135,8 @@ export class UsageService {
       sourceName: input.sourceName,
       inputTokens: input.inputTokens,
       outputTokens: input.outputTokens,
+      cacheWriteTokens: input.cacheWriteTokens ?? 0,
+      cacheReadTokens: input.cacheReadTokens ?? 0,
       // Kept as the sum so the analytics queries below stay a single column read.
       tokensUsed: input.inputTokens + input.outputTokens,
       creditsUsed: this.creditsFor(input.model, input.inputTokens, input.outputTokens),
@@ -270,6 +284,51 @@ export class UsageService {
       amountCents: Number(row.amount),
       count: Number(row.count),
     }));
+  }
+
+  /**
+   * What the workspace's runs cost us against what it was charged for them —
+   * the margin view. Credits are cents, so both sides are reported in USD to be
+   * directly comparable. Scoped to a trailing window because the useful question
+   * is "what is this costing now", not since the beginning of time.
+   */
+  async costSummary(
+    workspaceId: string,
+    days = 30,
+  ): Promise<{
+    costUsd: number;
+    chargedUsd: number;
+    marginUsd: number;
+    tokens: { input: number; output: number; cacheWrite: number; cacheRead: number };
+    events: number;
+  }> {
+    const row = await this.creditEventRepository
+      .createQueryBuilder('event')
+      .select('COALESCE(SUM(event.providerCostUsd), 0)', 'cost')
+      .addSelect('COALESCE(SUM(event.creditsUsed), 0)', 'credits')
+      .addSelect('COALESCE(SUM(event.inputTokens), 0)', 'input')
+      .addSelect('COALESCE(SUM(event.outputTokens), 0)', 'output')
+      .addSelect('COALESCE(SUM(event.cacheWriteTokens), 0)', 'cacheWrite')
+      .addSelect('COALESCE(SUM(event.cacheReadTokens), 0)', 'cacheRead')
+      .addSelect('COUNT(event.id)', 'events')
+      .where('event.workspaceId = :workspaceId', { workspaceId })
+      .andWhere(`event.createdAt >= now() - make_interval(days => :days)`, { days })
+      .getRawOne<Record<string, string>>();
+
+    const costUsd = Number(row?.cost ?? 0);
+    const chargedUsd = Number(row?.credits ?? 0) / CREDITS_PER_DOLLAR;
+    return {
+      costUsd,
+      chargedUsd,
+      marginUsd: chargedUsd - costUsd,
+      tokens: {
+        input: Number(row?.input ?? 0),
+        output: Number(row?.output ?? 0),
+        cacheWrite: Number(row?.cacheWrite ?? 0),
+        cacheRead: Number(row?.cacheRead ?? 0),
+      },
+      events: Number(row?.events ?? 0),
+    };
   }
 
   async summarizeForWorkspace(workspaceId: string): Promise<UsageSummary> {

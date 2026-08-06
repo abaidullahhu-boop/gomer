@@ -209,6 +209,8 @@ export class AnthropicProvider implements LlmProvider {
       usage: {
         inputTokens: response.usage.input_tokens + cacheWrites + cacheReads,
         outputTokens: response.usage.output_tokens,
+        cacheWriteTokens: cacheWrites,
+        cacheReadTokens: cacheReads,
       },
       stopReason,
       raw: response.content,

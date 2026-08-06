@@ -102,6 +102,15 @@ export interface ProviderResponse {
     inputTokens: number;
     outputTokens: number;
     /**
+     * The cached slices of {@link inputTokens}, when the provider reports them.
+     * They are already counted in `inputTokens` — a workspace is charged for the
+     * whole prompt it sent — and are broken out only because they are billed to
+     * us at different rates (a write costs more than fresh input, a read far
+     * less). Without them a cache-heavy run's cost cannot be derived at all.
+     */
+    cacheWriteTokens?: number;
+    cacheReadTokens?: number;
+    /**
      * What the provider says this call actually cost us, in USD. Only gateways
      * that report a per-response cost set this; when absent the cost is derived
      * from the catalog's list price instead.

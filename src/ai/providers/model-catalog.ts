@@ -25,6 +25,14 @@ export interface ModelDefinition {
   /** List price per million output tokens, in US dollars. */
   outputPricePerMillion: number;
   /**
+   * What the provider actually bills us per million tokens, when that differs
+   * from list — an introductory rate, or a negotiated one. List price sets what
+   * a workspace is charged and must not move when a promotion starts and ends;
+   * these set what we record as our own cost. Default to the list prices.
+   */
+  costInputPricePerMillion?: number;
+  costOutputPricePerMillion?: number;
+  /**
    * Whether the model can call tools. Gomer is entirely tool-driven, so a model
    * without this cannot run it and is never offered in settings.
    */
@@ -67,6 +75,11 @@ const ANTHROPIC_MODELS: ModelDefinition[] = [
     provider: 'anthropic',
     inputPricePerMillion: 3,
     outputPricePerMillion: 15,
+    // Anthropic's introductory rate, in effect through 2026-08-31. Delete these
+    // two lines once it lapses and cost recording falls back to list price —
+    // leaving them set would under-record what Sonnet 5 costs us.
+    costInputPricePerMillion: 2,
+    costOutputPricePerMillion: 10,
     supportsTools: true,
     supportsRemoteMcp: true,
     supportsAdaptiveThinking: true,
@@ -163,20 +176,53 @@ export function creditRates(model: ModelDefinition): { input: number; output: nu
 }
 
 /**
- * What a run costs us at the model's list price, in USD — the input side of
- * margin, as opposed to {@link creditRates} which is what we charge for it.
+ * Anthropic bills a cache write above the base input rate and a cache read far
+ * below it (5-minute ephemeral cache — the TTL AnthropicProvider requests). A
+ * run whose prompt is mostly a cache hit therefore costs a small fraction of
+ * what the same token count would cost uncached, which is the whole point of
+ * caching and the reason cost cannot be derived from a prompt size alone.
+ */
+const CACHE_WRITE_MULTIPLIER = 1.25;
+const CACHE_READ_MULTIPLIER = 0.1;
+
+/** The cached slices of a run's prompt, as reported by the provider. */
+export interface CacheTokens {
+  cacheWriteTokens?: number;
+  cacheReadTokens?: number;
+}
+
+/**
+ * What a run costs us, in USD — the input side of margin, as opposed to
+ * {@link creditRates} which is what we charge for it.
  *
  * Used for providers that do not report a real per-response cost. A gateway
  * that does report one should be trusted over this, since a router's list price
  * is a guess about which backend it picked.
+ *
+ * `inputTokens` is the whole prompt including its cached slices, so those are
+ * subtracted back out and re-priced at their own rates. A provider that reports
+ * no cache split prices as if nothing were cached, which is the correct answer
+ * for a provider that does no caching.
  */
 export function listCostUsd(
   model: ModelDefinition,
   inputTokens: number,
   outputTokens: number,
+  cache: CacheTokens = {},
 ): number {
+  const inputPrice = model.costInputPricePerMillion ?? model.inputPricePerMillion;
+  const outputPrice = model.costOutputPricePerMillion ?? model.outputPricePerMillion;
+
+  const cacheWrites = Math.max(0, cache.cacheWriteTokens ?? 0);
+  const cacheReads = Math.max(0, cache.cacheReadTokens ?? 0);
+  // Guard against a provider reporting cached slices larger than the prompt
+  // itself; a negative uncached remainder would credit us for the run.
+  const uncached = Math.max(0, inputTokens - cacheWrites - cacheReads);
+
   return (
-    (inputTokens / 1_000_000) * model.inputPricePerMillion +
-    (outputTokens / 1_000_000) * model.outputPricePerMillion
+    (uncached / 1_000_000) * inputPrice +
+    (cacheWrites / 1_000_000) * inputPrice * CACHE_WRITE_MULTIPLIER +
+    (cacheReads / 1_000_000) * inputPrice * CACHE_READ_MULTIPLIER +
+    (outputTokens / 1_000_000) * outputPrice
   );
 }

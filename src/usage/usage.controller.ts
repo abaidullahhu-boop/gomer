@@ -1,4 +1,4 @@
-import { Controller, Get } from '@nestjs/common';
+import { Controller, Get, Query } from '@nestjs/common';
 import { CurrentUser } from '../common/decorators';
 import { CreditEvent } from '../database/entities';
 import { CreditBalance, UsageService, UsageSummary } from './usage.service';
@@ -19,6 +19,13 @@ export class UsageController {
   @Get('balance')
   balance(@CurrentUser('workspaceId') workspaceId: string): Promise<CreditBalance> {
     return this.usageService.getBalance(workspaceId);
+  }
+
+  /** What the workspace's runs cost us vs what it was charged — the margin view. */
+  @Get('cost')
+  cost(@CurrentUser('workspaceId') workspaceId: string, @Query('days') days?: string) {
+    const window = Math.min(Math.max(Number(days) || 30, 1), 365);
+    return this.usageService.costSummary(workspaceId, window);
   }
 
   /** Recent credit events for the current workspace. */

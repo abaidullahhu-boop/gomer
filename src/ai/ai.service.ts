@@ -544,6 +544,8 @@ export class AiService {
     let answer = '';
     let inputTokens = 0;
     let outputTokens = 0;
+    let cacheWriteTokens = 0;
+    let cacheReadTokens = 0;
     // A run is many provider calls, so cost accumulates like tokens do. Left
     // undefined unless a provider actually reports one, so that "reported zero"
     // stays distinguishable from "reported nothing".
@@ -588,6 +590,8 @@ export class AiService {
       // actually served is the most useful single answer to "what ran?".
       if (response.usage.resolvedModel) resolvedModel = response.usage.resolvedModel;
       outputTokens += response.usage.outputTokens;
+      cacheWriteTokens += response.usage.cacheWriteTokens ?? 0;
+      cacheReadTokens += response.usage.cacheReadTokens ?? 0;
 
       answer += response.text;
       // Tools the provider ran itself are already complete; ours still need executing.
@@ -636,6 +640,8 @@ export class AiService {
       sourceName: options.sourceName,
       providerCostUsd: costUsd,
       resolvedModel,
+      cacheWriteTokens,
+      cacheReadTokens,
     });
 
     // Low-balance nudge: piggybacks on the answer once the workspace is under
@@ -1325,6 +1331,8 @@ export class AiService {
       sourceName?: string;
       providerCostUsd?: number;
       resolvedModel?: string;
+      cacheWriteTokens?: number;
+      cacheReadTokens?: number;
     } = {},
   ): Promise<void> {
     if (inputTokens + outputTokens <= 0) return;
@@ -1340,6 +1348,8 @@ export class AiService {
         sourceName: options.sourceName ?? 'ai.run',
         providerCostUsd: options.providerCostUsd,
         resolvedModel: options.resolvedModel ?? null,
+        cacheWriteTokens: options.cacheWriteTokens,
+        cacheReadTokens: options.cacheReadTokens,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
