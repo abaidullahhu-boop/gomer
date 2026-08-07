@@ -216,12 +216,23 @@ export class MetaMcpService implements OnModuleInit {
     url.searchParams.set('response_type', 'code');
     url.searchParams.set('client_id', clientId);
     url.searchParams.set('redirect_uri', this.cfg.redirectUri);
-    url.searchParams.set('scope', this.cfg.scopes);
+    // Facebook Login for Business takes its permissions from the configuration,
+    // not the request. The two are mutually exclusive: sending `scope` to an app
+    // set up for business login is rejected outright ("App not active"), so pick
+    // one based on whether a configuration id is set.
+    if (this.cfg.loginConfigId) {
+      url.searchParams.set('config_id', this.cfg.loginConfigId);
+    } else {
+      url.searchParams.set('scope', this.cfg.scopes);
+    }
     url.searchParams.set('state', state);
     url.searchParams.set('code_challenge', codeChallenge);
     url.searchParams.set('code_challenge_method', 'S256');
     this.logger.log(
-      `Meta authorize: client_id=${clientId || '(empty)'} redirect_uri=${this.cfg.redirectUri} scopes=${this.cfg.scopes}`,
+      `Meta authorize: client_id=${clientId || '(empty)'} redirect_uri=${this.cfg.redirectUri} ` +
+        (this.cfg.loginConfigId
+          ? `config_id=${this.cfg.loginConfigId}`
+          : `scopes=${this.cfg.scopes}`),
     );
     return url.toString();
   }

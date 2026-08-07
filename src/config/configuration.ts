@@ -57,6 +57,14 @@ export interface AppConfig {
     redirectUri: string;
     /** Space-separated ad scopes to request. */
     scopes: string;
+    /**
+     * A Facebook Login for Business configuration id. That product carries its
+     * permissions in the configuration rather than in the request, so when this
+     * is set the consent URL sends `config_id` instead of `scope` — sending
+     * `scope` to a business-login app is rejected with "App not active". Leave
+     * empty for an app using classic Facebook Login.
+     */
+    loginConfigId: string;
   };
   ai: {
     anthropicApiKey: string;
@@ -130,6 +138,7 @@ export const configuration = (): AppConfig => ({
     redirectUri:
       process.env.META_REDIRECT_URI ?? 'http://localhost:3000/integrations/meta/callback',
     scopes: process.env.META_SCOPES ?? 'ads_management ads_read business_management',
+    loginConfigId: process.env.META_LOGIN_CONFIG_ID ?? '',
   },
   ai: {
     anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? '',

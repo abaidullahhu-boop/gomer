@@ -86,6 +86,14 @@ services:
       - key: META_SCOPES
         scope: RUN_TIME
         value: ads_management ads_read business_management
+      # Facebook Login for Business configuration id. The app uses that product
+      # rather than classic Facebook Login, which takes its permissions from the
+      # configuration instead of the request — so this must be set or the consent
+      # screen fails with "App not active". Copy it from the Meta app dashboard
+      # under Facebook Login for Business -> Configurations.
+      - key: META_LOGIN_CONFIG_ID
+        scope: RUN_TIME
+        value: ""
       # ---- Secrets: replace the placeholder values in the DO dashboard ----
       - key: JWT_SECRET
         scope: RUN_TIME
