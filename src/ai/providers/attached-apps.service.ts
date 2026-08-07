@@ -100,10 +100,33 @@ export class AttachedAppsService {
       merged[appSlug] = union.slice(0, MAX_ACTIONS_PER_APP);
     }
 
+    await this.write(workspaceId, conversationId, merged);
+    return merged;
+  }
+
+  /**
+   * Set a conversation's record outright, without unioning it with what is
+   * already there.
+   *
+   * Used to hand a conversation's attachment to one branching off it — a Slack
+   * thread opening under a message answered in the channel above it. The branch
+   * starts from exactly what that turn sent rather than from everything the
+   * parent conversation has accumulated, so a topic the branch never mentioned
+   * does not follow it in.
+   */
+  async replace(workspaceId: string, conversationId: string, apps: AttachedApps): Promise<void> {
+    await this.write(workspaceId, conversationId, apps);
+  }
+
+  private async write(
+    workspaceId: string,
+    conversationId: string,
+    apps: AttachedApps,
+  ): Promise<void> {
     try {
       await this.redis.set(
         this.key(workspaceId, conversationId),
-        JSON.stringify(merged),
+        JSON.stringify(apps),
         'EX',
         ATTACHED_TTL_SECONDS,
       );
@@ -115,6 +138,5 @@ export class AttachedAppsService {
         }`,
       );
     }
-    return merged;
   }
 }

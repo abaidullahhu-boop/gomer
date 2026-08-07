@@ -265,6 +265,7 @@ export class AiService {
     localTools: ToolSpec[],
     workspaceId: string,
     conversationId: string | null,
+    branchConversationId: string | null,
   ): Promise<RemoteMcpServer[]> {
     const sticky: AttachedApps = conversationId
       ? await this.attachedApps.get(workspaceId, conversationId)
@@ -315,17 +316,31 @@ export class AiService {
         }),
     );
 
-    if (!conversationId) return attached;
+    let sending = attached;
+    if (conversationId) {
+      // Fold this turn into the conversation's record, then send the union — an
+      // app attached two turns ago is still expected to work now.
+      const merged = await this.attachedApps.merge(workspaceId, conversationId, attaching);
+      sending = servers
+        .filter((server) => server.name in merged)
+        .map((server) => ({
+          ...server,
+          enabledTools: merged[server.name].length ? merged[server.name] : undefined,
+        }));
+    }
 
-    // Fold this turn into the conversation's record, then send the union — an
-    // app attached two turns ago is still expected to work now.
-    const merged = await this.attachedApps.merge(workspaceId, conversationId, attaching);
-    return servers
-      .filter((server) => server.name in merged)
-      .map((server) => ({
-        ...server,
-        enabledTools: merged[server.name].length ? merged[server.name] : undefined,
-      }));
+    // Hand this turn's attachment to the conversation branching off it, so the
+    // branch's first message does not have to re-route from scratch — with only
+    // a follow-up like "check budget and targeting" to go on, the router would
+    // attach nothing and the answer would come from the transcript.
+    if (branchConversationId) {
+      await this.attachedApps.replace(
+        workspaceId,
+        branchConversationId,
+        Object.fromEntries(sending.map((server) => [server.name, server.enabledTools ?? []])),
+      );
+    }
+    return sending;
   }
 
   /**
@@ -379,6 +394,10 @@ export class AiService {
        * Keeps connected apps attached across its turns instead of re-routing per
        * message; omitted for one-off runs, which route from scratch. */
       conversationId?: string | null;
+      /** A conversation that will branch off this turn — the thread a Slack DM
+       * reply opens under it. Seeded with what this run attached, so the branch
+       * continues where its parent left off. */
+      branchConversationId?: string | null;
     } = {},
   ): Promise<AiRunResult> {
     const confirmVia: ConfirmMode = options.confirmVia ?? 'inline';
@@ -629,6 +648,7 @@ export class AiService {
         localTools,
         workspaceId,
         options.conversationId ?? null,
+        options.branchConversationId ?? null,
       );
     }
     let tools: ToolSpec[] = [...localTools, ...(bridged?.tools ?? [])];

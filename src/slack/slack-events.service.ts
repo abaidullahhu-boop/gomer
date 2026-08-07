@@ -21,6 +21,41 @@ import { SlackService } from './slack.service';
 const PROCESSING_REACTION = 'hourglass_flowing_sand';
 
 /**
+ * Which conversation a message belongs to, and which one branches off it. Both
+ * the replayed history and the run's attached apps hang off these keys.
+ *
+ * A reply inside a thread is keyed by that thread wherever it lives, DMs
+ * included. Keying a whole DM by its channel put every thread in it on one
+ * history: a Google Ads thread, resumed after a detour into a Meta thread,
+ * answered with the Meta campaign's budget and described its "ad sets" — those
+ * turns were simply the most recent ones under the shared key, and nothing in
+ * the transcript marked them as another conversation's.
+ *
+ * A DM message that is not in a thread has no thread of its own to key by, so
+ * those stay keyed by the per-user channel and read as one rolling conversation
+ * — which is what an unthreaded DM looks like to the person typing it. Since we
+ * answer such a message in a thread hanging off it, the next turn usually
+ * arrives keyed by that new thread instead, with none of the rolling history
+ * behind it; `branchThreadId` names it so this turn can be mirrored there as its
+ * opening. Without that the conversation restarts the moment the user replies
+ * where we invited them to.
+ */
+export function conversationKeys(
+  message: Pick<SlackMessageEvent, 'channel_type' | 'thread_ts' | 'ts'>,
+  channel: string,
+): { memoryThreadId: string | undefined; branchThreadId: string | null } {
+  const threadTs = message.thread_ts ?? message.ts;
+  const rollingDm = message.channel_type === 'im' && !message.thread_ts;
+  return {
+    memoryThreadId: rollingDm ? channel : threadTs,
+    // Guard the degenerate case where a message carries no ts: there is no
+    // thread to branch into, and mirroring into the channel key would duplicate
+    // the turn we just wrote there.
+    branchThreadId: rollingDm && threadTs && threadTs !== channel ? threadTs : null,
+  };
+}
+
+/**
  * Turns inbound Slack messages into Gomer runs. An @-mention in a channel or a
  * DM to the bot is treated as a prompt: we resolve the sender to a workspace
  * member (so their connected apps are available), run it through {@link AiService},
@@ -77,10 +112,7 @@ export class SlackEventsService {
     // Reply in the same thread for mentions; DMs have no parent to thread under.
     const threadTs = message.thread_ts ?? message.ts;
     const messageTs = message.ts;
-    // Conversation-memory key: a DM has no thread_ts, so each message would be
-    // its own island — key DMs by their (per-user) channel for a rolling
-    // conversation instead. Channel mentions stay keyed by their thread.
-    const memoryThreadId = message.channel_type === 'im' ? channel : threadTs;
+    const { memoryThreadId, branchThreadId } = conversationKeys(message, channel);
 
     // Signal "processing" by reacting to the user's own message rather than
     // posting a placeholder reply; the reaction is cleared once we answer.
@@ -123,10 +155,11 @@ export class SlackEventsService {
       const history = memoryThreadId
         ? await this.messagesService.getThread(workspace.id, memoryThreadId)
         : [];
-      if (memoryThreadId) {
+      for (const threadId of [memoryThreadId, branchThreadId]) {
+        if (!threadId) continue;
         await this.messagesService.appendTurn(
           workspace.id,
-          memoryThreadId,
+          threadId,
           member?.id ?? null,
           MessageRole.USER,
           prompt,
@@ -139,6 +172,7 @@ export class SlackEventsService {
         // Same key as the conversation memory: connected apps stay attached for
         // the life of a thread rather than being re-decided per message.
         conversationId: memoryThreadId,
+        branchConversationId: branchThreadId,
         // Slack can approve gated writes with interactive buttons, so defer them
         // out of band rather than using the soft `confirmed` flag.
         confirmVia: 'buttons',
@@ -149,11 +183,13 @@ export class SlackEventsService {
 
       const answer = result.answer || "I couldn't come up with a response to that.";
 
-      // Record Gomer's side of the turn so follow-ups in this thread see it.
-      if (memoryThreadId && result.answer) {
+      // Record Gomer's side of the turn so follow-ups in this thread see it, and
+      // in the thread this answer opens, which is where the follow-up will land.
+      for (const threadId of [memoryThreadId, branchThreadId]) {
+        if (!threadId || !result.answer) continue;
         await this.messagesService.appendTurn(
           workspace.id,
-          memoryThreadId,
+          threadId,
           null,
           MessageRole.ASSISTANT,
           result.answer,

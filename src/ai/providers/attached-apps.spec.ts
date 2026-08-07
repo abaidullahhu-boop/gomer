@@ -88,6 +88,25 @@ void test('a Redis failure costs a re-route, never the run', async () => {
   assert.deepEqual(merged, { google_ads: ['list-campaigns'] });
 });
 
+void test('replace hands a branching conversation exactly what it was given', async () => {
+  const service = new AttachedAppsService(fakeRedis());
+  await service.merge(WORKSPACE, THREAD, { google_ads: ['list-campaigns'], gmail: [] });
+  // The branch inherits only what its parent turn sent, not everything the
+  // parent has accumulated — and does not union with whatever was there before.
+  await service.replace(WORKSPACE, 'branch', { google_ads: ['list-campaigns'] });
+  await service.replace(WORKSPACE, 'branch', { meta_ads: ['list-adaccounts'] });
+  assert.deepEqual(await service.get(WORKSPACE, 'branch'), { meta_ads: ['list-adaccounts'] });
+  assert.deepEqual(Object.keys(await service.get(WORKSPACE, THREAD)).sort(), [
+    'gmail',
+    'google_ads',
+  ]);
+});
+
+void test('a Redis failure during replace never fails the run', async () => {
+  const service = new AttachedAppsService(brokenRedis());
+  await service.replace(WORKSPACE, 'branch', { google_ads: ['list-campaigns'] });
+});
+
 void test('a corrupt record is treated as nothing attached', async () => {
   const service = new AttachedAppsService(fakeRedis({ 'ai:attached:ws-1:1712345678.0001': '{' }));
   assert.deepEqual(await service.get(WORKSPACE, THREAD), {});
