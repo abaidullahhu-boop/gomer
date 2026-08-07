@@ -10,6 +10,7 @@ import {
   McpBridgeService,
 } from './providers/mcp-bridge.service';
 import { ToolRouterService } from './providers/tool-router.service';
+import { AttachedApps, AttachedAppsService } from './providers/attached-apps.service';
 import { buildCatalog, ModelDefinition } from './providers/model-catalog';
 import {
   LlmProvider,
@@ -205,6 +206,7 @@ export class AiService {
     private readonly gatewayProvider: GatewayProvider,
     private readonly mcpBridge: McpBridgeService,
     private readonly toolRouter: ToolRouterService,
+    private readonly attachedApps: AttachedAppsService,
     private readonly workspacesService: WorkspacesService,
   ) {}
 
@@ -245,6 +247,110 @@ export class AiService {
   }
 
   /**
+   * Decide which connected apps this run attaches, and which of their actions.
+   *
+   * Two narrowings, and one thing that overrides both. An app already attached
+   * earlier in the conversation stays attached with the actions it already had:
+   * re-deciding per message made apps blink in and out mid-thread — a follow-up
+   * question answered from the transcript instead of live data — and re-paid the
+   * cache write each time, which is 1.25x the input rate against 0.1x to read
+   * what is already there. Apps the conversation has not seen go through the
+   * routers; what comes back is merged in and the union is what we send.
+   */
+  private async attachServers(
+    provider: LlmProvider,
+    modelId: string,
+    prompt: string,
+    servers: RemoteMcpServer[],
+    localTools: ToolSpec[],
+    workspaceId: string,
+    conversationId: string | null,
+  ): Promise<RemoteMcpServer[]> {
+    const sticky: AttachedApps = conversationId
+      ? await this.attachedApps.get(workspaceId, conversationId)
+      : {};
+
+    // Keyed by server name rather than app slug: the same app connected under a
+    // team and a private account is two servers holding different data, and they
+    // must not inherit each other's actions.
+    const undecided = servers.filter((server) => !(server.name in sticky));
+    const chosen = new Set(servers.filter((server) => server.name in sticky).map((s) => s.name));
+    if (undecided.length) {
+      // Route only over what this conversation has not already committed to;
+      // when that leaves nothing, the routing round trip is pure cost.
+      const relevant = await this.toolRouter.selectRelevantServers(
+        provider,
+        modelId,
+        prompt,
+        undecided,
+        localTools,
+      );
+      for (const server of relevant ?? undecided) chosen.add(server.name);
+    }
+    if (!chosen.size) return [];
+
+    const attaching: AttachedApps = {};
+    const attached = await Promise.all(
+      // Preserve the input order so the same set of apps always renders the same
+      // bytes, and a settled conversation keeps hitting the cached prefix.
+      servers
+        .filter((server) => chosen.has(server.name))
+        .map(async (server) => {
+          // A server the conversation already committed to keeps exactly the
+          // actions it had. Re-narrowing per message would rewrite the prefix for
+          // no gain, and could drop a tool the thread is mid-way through using.
+          // An empty list is the "expose everything" marker.
+          const remembered = sticky[server.name];
+          if (remembered) {
+            attaching[server.name] = remembered;
+            return { ...server, enabledTools: remembered.length ? remembered : undefined };
+          }
+
+          const actions = await this.appActions(server.appSlug);
+          const enabled = actions.length
+            ? await this.toolRouter.selectRelevantActions(provider, modelId, prompt, actions)
+            : null;
+          attaching[server.name] = enabled ?? [];
+          return { ...server, enabledTools: enabled ?? undefined };
+        }),
+    );
+
+    if (!conversationId) return attached;
+
+    // Fold this turn into the conversation's record, then send the union — an
+    // app attached two turns ago is still expected to work now.
+    const merged = await this.attachedApps.merge(workspaceId, conversationId, attaching);
+    return servers
+      .filter((server) => server.name in merged)
+      .map((server) => ({
+        ...server,
+        enabledTools: merged[server.name].length ? merged[server.name] : undefined,
+      }));
+  }
+
+  /**
+   * An app's actions as routing candidates. Served from the shared catalogue
+   * cache, so this is a Redis read rather than a Pipedream round trip; a failure
+   * yields none, which the caller reads as "expose the app whole" — worse for
+   * the bill, never for the run.
+   */
+  private async appActions(
+    appSlug: string,
+  ): Promise<Array<{ name: string; description?: string }>> {
+    try {
+      const { tools } = await this.integrationsService.listAppTools(appSlug);
+      return tools.map((tool) => ({ name: tool.key, description: tool.description }));
+    } catch (error) {
+      this.logger.warn(
+        `Could not list actions for ${appSlug}, attaching it whole: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return [];
+    }
+  }
+
+  /**
    * Run a single prompt for a workspace, exposing its connected apps as tools,
    * and return Gomer's answer plus the actions it took.
    *
@@ -269,6 +375,10 @@ export class AiService {
       /** Prior turns of this conversation (oldest first), replayed ahead of the
        * prompt so the model has thread continuity. Omitted for fresh runs. */
       history?: ConversationTurn[];
+      /** Stable id for the conversation this run belongs to (a Slack thread).
+       * Keeps connected apps attached across its turns instead of re-routing per
+       * message; omitted for one-off runs, which route from scratch. */
+      conversationId?: string | null;
     } = {},
   ): Promise<AiRunResult> {
     const confirmVia: ConfirmMode = options.confirmVia ?? 'inline';
@@ -503,11 +613,12 @@ export class AiService {
       );
       bridged = bridged.narrowTo(relevant ?? bridged.tools, MAX_BRIDGED_TOOLS);
     } else if (mcpServers.length) {
-      // Server-side MCP hides the individual schemas from us, so the same saving
-      // has to be taken a level up: attach only the apps this message plausibly
-      // needs. An app the provider never connects to is an app whose schemas are
-      // never fetched, and those schemas are the bulk of what a run is billed for.
-      const relevant = await this.toolRouter.selectRelevantServers(
+      // Server-side MCP hides the individual schemas from us, but it does let us
+      // name which of an app's actions to expose — and the provider then fetches
+      // only those. Narrowing therefore happens twice: which apps are in play,
+      // then which of their actions ride along. The second is where the money is:
+      // Google Ads whole is ~108K prompt tokens, two of its actions ~1K.
+      mcpServers = await this.attachServers(
         provider,
         model.id,
         prompt,
@@ -516,8 +627,9 @@ export class AiService {
         // told so: otherwise a question about campaigns pulls in whichever ad
         // connector looks related and pays for its schemas unused.
         localTools,
+        workspaceId,
+        options.conversationId ?? null,
       );
-      if (relevant) mcpServers = relevant;
     }
     let tools: ToolSpec[] = [...localTools, ...(bridged?.tools ?? [])];
     appSlugs = [...new Set([...reachableApps, ...(hasMeta ? ['meta_ads'] : [])])];

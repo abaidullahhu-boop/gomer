@@ -9,6 +9,7 @@ import { WorkspacesModule } from '../workspaces/workspaces.module';
 import { AiController } from './ai.controller';
 import { AiService } from './ai.service';
 import { AnthropicProvider } from './providers/anthropic.provider';
+import { AttachedAppsService } from './providers/attached-apps.service';
 import { GatewayProvider } from './providers/gateway.provider';
 import { McpBridgeService } from './providers/mcp-bridge.service';
 import { ToolRouterService } from './providers/tool-router.service';
@@ -24,7 +25,14 @@ import { ToolRouterService } from './providers/tool-router.service';
     WorkspacesModule,
   ],
   controllers: [AiController],
-  providers: [AiService, AnthropicProvider, GatewayProvider, McpBridgeService, ToolRouterService],
+  providers: [
+    AiService,
+    AnthropicProvider,
+    AttachedAppsService,
+    GatewayProvider,
+    McpBridgeService,
+    ToolRouterService,
+  ],
   exports: [AiService],
 })
 export class AiModule {}

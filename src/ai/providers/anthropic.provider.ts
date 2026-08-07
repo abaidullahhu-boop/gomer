@@ -59,6 +59,17 @@ export class AnthropicProvider implements LlmProvider {
       ...request.mcpServers.map((server) => ({
         type: 'mcp_toolset' as const,
         mcp_server_name: server.name,
+        // Deny by default and name the wanted actions: the provider then fetches
+        // only those schemas rather than the app's entire catalogue. `configs` is
+        // a map keyed by tool name, not a list — an array is rejected outright.
+        ...(server.enabledTools?.length
+          ? {
+              default_config: { enabled: false },
+              configs: Object.fromEntries(
+                server.enabledTools.map((tool) => [tool, { enabled: true }]),
+              ),
+            }
+          : {}),
       })),
       ...request.tools.map((tool) => ({
         type: 'custom' as const,
@@ -151,9 +162,7 @@ export class AnthropicProvider implements LlmProvider {
     const last = messages[messages.length - 1];
     if (!last || last.role !== 'user') return messages;
     const blocks: Anthropic.Beta.BetaContentBlockParam[] =
-      typeof last.content === 'string'
-        ? [{ type: 'text', text: last.content }]
-        : [...last.content];
+      typeof last.content === 'string' ? [{ type: 'text', text: last.content }] : [...last.content];
     const tail = blocks[blocks.length - 1];
     // Not every block type carries cache_control (a thinking block rejects it
     // outright). Text and tool results are the only ones a user turn of ours

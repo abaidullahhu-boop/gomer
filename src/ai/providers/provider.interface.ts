@@ -55,6 +55,14 @@ export interface RemoteMcpServer {
   name: string;
   url: string;
   authorizationToken?: string;
+  /**
+   * The subset of the app's actions to expose, by MCP tool name. A server's
+   * whole action list is otherwise fetched and billed on every turn, and an app
+   * like Google Ads carries 35 of them — measured at ~108K prompt tokens against
+   * ~1K for two. Undefined means expose everything, which is the right answer
+   * for an app small enough that narrowing would save nothing.
+   */
+  enabledTools?: string[];
 }
 
 export interface ProviderRequest {

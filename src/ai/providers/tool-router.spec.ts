@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ToolRouterService } from './tool-router.service';
+import { RoutableAction, ToolRouterService } from './tool-router.service';
 import {
   LlmProvider,
   ProviderRequest,
@@ -48,12 +48,18 @@ async function select(
 
 void test('selectRelevantServers keeps only the named apps', async () => {
   const selected = await select('["google_sheets"]');
-  assert.deepEqual(selected?.map((server) => server.appSlug), ['google_sheets']);
+  assert.deepEqual(
+    selected?.map((server) => server.appSlug),
+    ['google_sheets'],
+  );
 });
 
 void test('selectRelevantServers preserves input order so the prefix stays cacheable', async () => {
   const selected = await select('["notion", "google_sheets"]');
-  assert.deepEqual(selected?.map((server) => server.appSlug), ['google_sheets', 'notion']);
+  assert.deepEqual(
+    selected?.map((server) => server.appSlug),
+    ['google_sheets', 'notion'],
+  );
 });
 
 void test('selectRelevantServers trusts an explicit empty answer', async () => {
@@ -62,7 +68,10 @@ void test('selectRelevantServers trusts an explicit empty answer', async () => {
 
 void test('selectRelevantServers tolerates a code fence around the array', async () => {
   const selected = await select('```json\n["slack"]\n```');
-  assert.deepEqual(selected?.map((server) => server.appSlug), ['slack']);
+  assert.deepEqual(
+    selected?.map((server) => server.appSlug),
+    ['slack'],
+  );
 });
 
 void test('selectRelevantServers falls back when every name is hallucinated', async () => {
@@ -117,4 +126,53 @@ void test('selectRelevantServers tells the router which tools are built in', asy
   const content = sent && sent.role === 'user' ? sent.content : '';
   assert.match(content, /meta_ads_list_campaigns/);
   assert.match(content, /verify_roas/);
+});
+
+/** Enough actions to clear ACTION_ROUTE_THRESHOLD, with realistic key names. */
+const ACTIONS: RoutableAction[] = [
+  { name: 'google_ads-list-account-id-options', description: 'List accessible account ids.' },
+  { name: 'google_ads-list-campaigns', description: 'List campaigns for a customer.' },
+  { name: 'google_ads-create-or-update-campaign', description: 'Create or update a campaign.' },
+  { name: 'google_ads-generate-keyword-ideas', description: 'Generate keyword ideas.' },
+  { name: 'google_ads-send-offline-conversion', description: 'Upload an offline conversion.' },
+];
+
+async function selectActions(
+  answer: string | Error,
+  actions: RoutableAction[] = ACTIONS,
+): Promise<string[] | null> {
+  return new ToolRouterService().selectRelevantActions(
+    stubProvider(answer),
+    'claude-sonnet-5',
+    'list my google ads accounts',
+    actions,
+  );
+}
+
+void test('selectRelevantActions keeps only the named actions', async () => {
+  const selected = await selectActions('["google_ads-list-campaigns"]');
+  assert.deepEqual(selected, ['google_ads-list-campaigns']);
+});
+
+void test('selectRelevantActions sorts, so a settled set renders identical bytes', async () => {
+  const selected = await selectActions(
+    '["google_ads-list-campaigns", "google_ads-list-account-id-options"]',
+  );
+  assert.deepEqual(selected, ['google_ads-list-account-id-options', 'google_ads-list-campaigns']);
+});
+
+void test('selectRelevantActions exposes the app whole when it has few actions', async () => {
+  assert.equal(await selectActions('["anything"]', ACTIONS.slice(0, 3)), null);
+});
+
+void test('selectRelevantActions exposes the app whole when every name is hallucinated', async () => {
+  assert.equal(await selectActions('["google_ads-not-a-real-action"]'), null);
+});
+
+void test('selectRelevantActions exposes the app whole when the provider fails', async () => {
+  assert.equal(await selectActions(new Error('timeout')), null);
+});
+
+void test('selectRelevantActions exposes the app whole on an unparseable answer', async () => {
+  assert.equal(await selectActions('I think you want the campaigns one'), null);
 });

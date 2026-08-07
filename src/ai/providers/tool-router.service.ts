@@ -14,6 +14,19 @@ const ROUTE_THRESHOLD = 20;
 const SERVER_ROUTE_THRESHOLD = 1;
 
 /**
+ * Below this many actions an app is cheap enough to expose whole. Far lower than
+ * {@link ROUTE_THRESHOLD} because an action's schema is large — a handful of
+ * them already outweighs the router call that would narrow them.
+ */
+const ACTION_ROUTE_THRESHOLD = 4;
+
+/** A candidate the router can pick by name: a local tool or a bridged action. */
+export interface RoutableAction {
+  name: string;
+  description?: string;
+}
+
+/**
  * Hard ceiling on how many tool descriptions go into the router prompt. A
  * pathological workspace with hundreds of tools would otherwise make the router
  * call itself expensive; the candidate list is already app-fair (round-robin),
@@ -40,21 +53,20 @@ const SERVER_ROUTER_SYSTEM_PROMPT =
   'assistant already has, and a list of apps the workspace has connected, each as ' +
   '"id (name)". Return the connected apps the request actually needs, as a JSON ' +
   'array of app ids and nothing else.\n\n' +
-  'Built-in tools take precedence. If a built-in tool can serve the request, no ' +
-  'connected app is needed for it. Do not select an app merely because it is ' +
-  'topically related to something a built-in tool already covers — select it only ' +
-  'when the request clearly needs that specific app, such as when the user names ' +
-  'it or asks for data only that app holds.\n\n' +
-  'This matters most when a connected app overlaps a built-in tool: a request ' +
-  'about ads, campaigns, spend, or return on ad spend is served by the built-in ' +
-  'tools unless the user names a different platform. Resolve that ambiguity in ' +
-  'favour of the built-in and return no app — a user who meant the connected app ' +
-  'will say so.\n\n' +
-  'Attaching an app costs tens of thousands of tokens, so an unnecessary one is ' +
-  'expensive — but an app the task genuinely needs is worth far more than it ' +
-  'costs. When the request plainly needs one, include it, along with any app ' +
-  'needed to gather ids or context first. Return an empty array when no connected ' +
-  'app is needed. Respond with the JSON array only — no prose, no code fences.';
+  'Built-in tools cover their own domain, so an app is not needed merely to ' +
+  'repeat what one already does. But when a connected app covers the same domain ' +
+  'as a built-in, the two hold different data: the built-in cannot see inside the ' +
+  'connected app.\n\n' +
+  'So for a request that spans a domain rather than naming one platform — "list ' +
+  'my ads accounts", "how are my campaigns doing", "what am I spending" — select ' +
+  'every connected app in that domain alongside the built-ins. Answering from the ' +
+  'built-in alone would silently omit whatever the connected app holds, and the ' +
+  'user would never know it was missing. Only leave an app out when the request ' +
+  'plainly cannot involve it.\n\n' +
+  'Attaching an app is cheap — only the handful of its actions the request needs ' +
+  'are loaded — so bias toward including one. Include any app needed to gather ' +
+  'ids or context first. Return an empty array only when no connected app could ' +
+  'contribute. Respond with the JSON array only — no prose, no code fences.';
 
 /**
  * Picks which bridged tools are worth sending for a given message.
@@ -86,8 +98,69 @@ export class ToolRouterService {
     if (candidates.length <= ROUTE_THRESHOLD) return null;
 
     const considered = candidates.slice(0, MAX_CANDIDATES_IN_PROMPT);
-    const catalog = considered
-      .map((tool) => `- ${tool.name}: ${this.previewDescription(tool.description)}`)
+    const names = await this.chooseNames(provider, model, message, considered);
+    if (!names) return null;
+
+    // Keep only names that are real candidates — the model can hallucinate one —
+    // preserving the app-fair order the candidates already came in.
+    const selected = considered.filter((tool) => names.has(tool.name));
+
+    // An empty selection is ambiguous: a correct "nothing applies" and a wrong
+    // "the model dropped everything" look identical, and the second fails a real
+    // task. Falling back to unfiltered costs tokens but never capability.
+    if (!selected.length) return null;
+
+    this.logger.log(`Tool router kept ${selected.length}/${candidates.length} tools for this run`);
+    return selected;
+  }
+
+  /**
+   * Which of an attached app's individual actions this message needs.
+   *
+   * The server-side MCP path never shows us a tool's schema, but it does let us
+   * name which of an app's actions to expose — and the provider then fetches
+   * only those. That turns app attachment from a ~100K-token decision into a
+   * ~1K-token one, which is what makes attaching an app on a maybe affordable.
+   *
+   * Returns the action names to expose, or null for "expose everything" — the
+   * same failure-is-never-fatal contract as {@link selectRelevant}.
+   */
+  async selectRelevantActions(
+    provider: LlmProvider,
+    model: string,
+    message: string,
+    actions: RoutableAction[],
+  ): Promise<string[] | null> {
+    // Below a handful of actions the whole app is about as cheap as the router
+    // call that would narrow it, and narrowing can only lose capability.
+    if (actions.length <= ACTION_ROUTE_THRESHOLD) return null;
+
+    const considered = actions.slice(0, MAX_CANDIDATES_IN_PROMPT);
+    const names = await this.chooseNames(provider, model, message, considered);
+    if (!names) return null;
+
+    const selected = considered.filter((action) => names.has(action.name));
+    if (!selected.length) return null;
+
+    this.logger.log(`Action router kept ${selected.length}/${actions.length} actions for this run`);
+    // Sorted so the same set always renders the same bytes: the toolset sits in
+    // the cached prefix, and an order that wobbled between turns would miss the
+    // cache for no reason.
+    return selected.map((action) => action.name).sort();
+  }
+
+  /**
+   * Ask the model which of `candidates` the request could need, by name. Shared
+   * by both routing levels — they differ only in what a candidate is.
+   */
+  private async chooseNames(
+    provider: LlmProvider,
+    model: string,
+    message: string,
+    candidates: RoutableAction[],
+  ): Promise<Set<string> | null> {
+    const catalog = candidates
+      .map((tool) => `- ${tool.name}: ${this.previewDescription(tool.description ?? '')}`)
       .join('\n');
 
     let text: string;
@@ -122,19 +195,7 @@ export class ToolRouterService {
       this.logger.warn('Tool router returned an unparseable answer; sending unfiltered toolset');
       return null;
     }
-
-    // Keep only names that are real candidates — the model can hallucinate one —
-    // preserving the app-fair order the candidates already came in.
-    const wanted = new Set(names);
-    const selected = considered.filter((tool) => wanted.has(tool.name));
-
-    // An empty selection is ambiguous: a correct "nothing applies" and a wrong
-    // "the model dropped everything" look identical, and the second fails a real
-    // task. Falling back to unfiltered costs tokens but never capability.
-    if (!selected.length) return null;
-
-    this.logger.log(`Tool router kept ${selected.length}/${candidates.length} tools for this run`);
-    return selected;
+    return new Set(names);
   }
 
   /**
@@ -142,9 +203,8 @@ export class ToolRouterService {
    * to attach at all.
    *
    * On the server-side MCP path we never see individual tool schemas — the
-   * provider fetches them itself — so there is nothing to filter tool by tool.
-   * Dropping a whole server is the only lever, and it is a large one: each app's
-   * schemas are tens of thousands of tokens that ride on every turn of the run.
+   * provider fetches them itself — so filtering tool by tool is done separately,
+   * by {@link selectRelevantActions}. This decides which apps are in play at all.
    *
    * Selection preserves the caller's order, so two messages that pick the same
    * apps render a byte-identical prefix and can share a prompt cache entry.

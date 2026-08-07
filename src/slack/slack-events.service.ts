@@ -136,6 +136,9 @@ export class SlackEventsService {
       const result = await this.aiService.run(workspace.id, member?.id ?? null, prompt, {
         sourceName: 'slack',
         history,
+        // Same key as the conversation memory: connected apps stay attached for
+        // the life of a thread rather than being re-decided per message.
+        conversationId: memoryThreadId,
         // Slack can approve gated writes with interactive buttons, so defer them
         // out of band rather than using the soft `confirmed` flag.
         confirmVia: 'buttons',
