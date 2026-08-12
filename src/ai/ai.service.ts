@@ -249,13 +249,18 @@ export class AiService {
   /**
    * Decide which connected apps this run attaches, and which of their actions.
    *
-   * Two narrowings, and one thing that overrides both. An app already attached
-   * earlier in the conversation stays attached with the actions it already had:
-   * re-deciding per message made apps blink in and out mid-thread — a follow-up
-   * question answered from the transcript instead of live data — and re-paid the
-   * cache write each time, which is 1.25x the input rate against 0.1x to read
-   * what is already there. Apps the conversation has not seen go through the
-   * routers; what comes back is merged in and the union is what we send.
+   * Two narrowings, and one thing that overrides the first. An app attached
+   * earlier in the conversation stays attached: re-deciding per message made
+   * apps blink in and out mid-thread — a follow-up question answered from the
+   * transcript instead of live data — and re-paid the cache write each time,
+   * which is 1.25x the input rate against 0.1x to read what is already there.
+   *
+   * Which of its actions ride along is decided every turn, though. Freezing that
+   * too meant a thread's action set was whatever its opening message needed:
+   * "check my google ads" attached the readers, and "target the US" three turns
+   * later still saw only readers, so the model reported that the connection
+   * could not write — an app limit it had inferred from its own toolset. The
+   * union is append-only, so re-routing can only add.
    */
   private async attachServers(
     provider: LlmProvider,
@@ -297,20 +302,31 @@ export class AiService {
       servers
         .filter((server) => chosen.has(server.name))
         .map(async (server) => {
-          // A server the conversation already committed to keeps exactly the
-          // actions it had. Re-narrowing per message would rewrite the prefix for
-          // no gain, and could drop a tool the thread is mid-way through using.
-          // An empty list is the "expose everything" marker.
+          // An empty list is the "expose everything" marker: the app is already
+          // whole, so there is nothing the router could add and the call is pure
+          // cost.
           const remembered = sticky[server.name];
-          if (remembered) {
-            attaching[server.name] = remembered;
-            return { ...server, enabledTools: remembered.length ? remembered : undefined };
+          if (remembered?.length === 0) {
+            attaching[server.name] = [];
+            return { ...server, enabledTools: undefined };
           }
 
           const actions = await this.appActions(server.appSlug);
           const enabled = actions.length
             ? await this.toolRouter.selectRelevantActions(provider, modelId, prompt, actions)
             : null;
+
+          // Null means "expose the app whole" — the fail-open answer for an app
+          // too small to route, an unreachable catalogue, or a router error. For
+          // an app this conversation has already narrowed it can only be the
+          // failure reading, since a narrow list is proof it routed once. Widening
+          // it mid-thread would cost the whole catalogue for a transient error, so
+          // keep what the thread has instead.
+          if (!enabled && remembered?.length) {
+            attaching[server.name] = remembered;
+            return { ...server, enabledTools: remembered };
+          }
+
           attaching[server.name] = enabled ?? [];
           return { ...server, enabledTools: enabled ?? undefined };
         }),

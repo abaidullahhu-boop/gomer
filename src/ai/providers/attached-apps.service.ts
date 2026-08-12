@@ -16,6 +16,10 @@ const ATTACHED_TTL_SECONDS = 2 * 60 * 60;
  * Ceiling on how many actions one app accumulates within a conversation. The
  * union only grows, so without a cap a long thread would drift back toward
  * sending the app's whole catalogue — the thing this exists to avoid.
+ *
+ * At the ceiling the oldest actions are dropped, never the incoming ones: the
+ * turn's own selection is what the current message needs, and evicting that
+ * would fail the request it was chosen for.
  */
 const MAX_ACTIONS_PER_APP = 24;
 
@@ -41,6 +45,12 @@ export type AttachedApps = Record<string, string[]>;
  * Attachment is therefore append-only within a conversation: what a thread has
  * used once stays available, and the prefix converges to something stable that
  * subsequent turns read from cache.
+ *
+ * Append-only is what lets the caller keep routing an attached app's actions
+ * every turn. Each turn contributes what the current message needs, the record
+ * accumulates, and nothing a previous turn relied on is ever taken away — so
+ * re-routing is safe, and a thread's later messages are not confined to the
+ * capabilities its first one happened to ask for.
  */
 @Injectable()
 export class AttachedAppsService {
@@ -76,10 +86,12 @@ export class AttachedAppsService {
    * Merge this turn's attachment into the conversation's record and return the
    * union, which is what the run should actually send.
    *
-   * Actions are unioned per app and sorted, so a set that has stopped growing
-   * renders byte-identical every turn and stays a cache hit. An app the caller
-   * marks as "everything" (no action list) stays that way — narrowing it later
-   * would drop tools mid-conversation.
+   * New actions are appended rather than sorted in. A conversation that has
+   * settled renders byte-identical every turn either way, but while it is still
+   * growing, appending leaves the existing prefix intact and only the tail is
+   * new — where sorting would insert into the middle and invalidate everything
+   * after it. An app the caller marks as "everything" (no action list) stays
+   * that way — narrowing it later would drop tools mid-conversation.
    */
   async merge(
     workspaceId: string,
@@ -96,8 +108,10 @@ export class AttachedAppsService {
         merged[appSlug] = [];
         continue;
       }
-      const union = [...new Set([...(before ?? []), ...actions])].sort();
-      merged[appSlug] = union.slice(0, MAX_ACTIONS_PER_APP);
+      const union = [...new Set([...(before ?? []), ...actions])];
+      // Keep the tail: the newest actions are this turn's, and dropping those
+      // would break the message that asked for them.
+      merged[appSlug] = union.slice(-MAX_ACTIONS_PER_APP);
     }
 
     await this.write(workspaceId, conversationId, merged);

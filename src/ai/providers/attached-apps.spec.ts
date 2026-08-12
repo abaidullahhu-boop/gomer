@@ -35,7 +35,21 @@ void test('merge returns the union of past and present actions', async () => {
   const service = new AttachedAppsService(fakeRedis());
   await service.merge(WORKSPACE, THREAD, { google_ads: ['list-campaigns'] });
   const merged = await service.merge(WORKSPACE, THREAD, { google_ads: ['list-budgets'] });
-  assert.deepEqual(merged, { google_ads: ['list-budgets', 'list-campaigns'] });
+  assert.deepEqual(merged, { google_ads: ['list-campaigns', 'list-budgets'] });
+});
+
+void test('a later turn adds a write action to a thread that opened read-only', async () => {
+  // The regression this whole append-only design is for: a thread that opened
+  // with "check my google ads" must not be stuck reporting that the app cannot
+  // write when the fourth message asks it to target the US.
+  const service = new AttachedAppsService(fakeRedis());
+  await service.merge(WORKSPACE, THREAD, { google_ads: ['list-campaigns'] });
+  await service.merge(WORKSPACE, THREAD, { google_ads: ['list-campaign-budgets'] });
+  const merged = await service.merge(WORKSPACE, THREAD, {
+    google_ads: ['create-or-remove-campaign-criteria'],
+  });
+  assert.ok(merged.google_ads.includes('create-or-remove-campaign-criteria'));
+  assert.ok(merged.google_ads.includes('list-campaigns'));
 });
 
 void test('merge keeps an app attached on a turn that did not ask for it', async () => {
@@ -47,10 +61,20 @@ void test('merge keeps an app attached on a turn that did not ask for it', async
   assert.deepEqual(Object.keys(merged).sort(), ['gmail', 'google_ads']);
 });
 
-void test('merge sorts, so a settled conversation renders a cacheable prefix', async () => {
+void test('merge appends, leaving the existing prefix byte-identical', async () => {
   const service = new AttachedAppsService(fakeRedis());
-  const merged = await service.merge(WORKSPACE, THREAD, { google_ads: ['b', 'a', 'c'] });
-  assert.deepEqual(merged.google_ads, ['a', 'b', 'c']);
+  await service.merge(WORKSPACE, THREAD, { google_ads: ['b', 'a'] });
+  // 'a' sorts before both, but inserting it in the middle would invalidate the
+  // cached prefix from that point on; growth belongs at the tail.
+  const merged = await service.merge(WORKSPACE, THREAD, { google_ads: ['a', 'c'] });
+  assert.deepEqual(merged.google_ads, ['b', 'a', 'c']);
+});
+
+void test('a settled conversation renders byte-identical every turn', async () => {
+  const service = new AttachedAppsService(fakeRedis());
+  await service.merge(WORKSPACE, THREAD, { google_ads: ['b', 'a', 'c'] });
+  const again = await service.merge(WORKSPACE, THREAD, { google_ads: ['c', 'b'] });
+  assert.deepEqual(again.google_ads, ['b', 'a', 'c']);
 });
 
 void test('an empty list means expose everything and absorbs any subset', async () => {
@@ -72,6 +96,17 @@ void test('the per-app action union is capped so a long thread cannot drift back
   const many = Array.from({ length: 40 }, (_, i) => `action-${String(i).padStart(2, '0')}`);
   const merged = await service.merge(WORKSPACE, THREAD, { google_ads: many });
   assert.equal(merged.google_ads.length, 24);
+});
+
+void test('the cap evicts the oldest actions, never the current turn', async () => {
+  const service = new AttachedAppsService(fakeRedis());
+  const many = Array.from({ length: 24 }, (_, i) => `old-${String(i).padStart(2, '0')}`);
+  await service.merge(WORKSPACE, THREAD, { google_ads: many });
+  const merged = await service.merge(WORKSPACE, THREAD, { google_ads: ['needed-now'] });
+  assert.equal(merged.google_ads.length, 24);
+  // Dropping the action the current message routed to would fail that message.
+  assert.equal(merged.google_ads.at(-1), 'needed-now');
+  assert.ok(!merged.google_ads.includes('old-00'));
 });
 
 void test('conversations do not leak into each other', async () => {
