@@ -4,28 +4,13 @@ import { PipedreamService } from './pipedream.service';
 const SHEETS_BASE = 'https://sheets.googleapis.com/v4/spreadsheets';
 
 /**
- * How a Sheets call is authenticated.
- *
- * `pipedream` is the path we want: the request goes through the Connect proxy,
- * which attaches the connected account's credentials and refreshes them, so no
- * Google token is ever held here. `token` calls Google directly with a stored
- * OAuth token — kept as the fallback for when the proxy is unavailable, so a
- * workspace whose credentials we can read still exports rather than failing.
+ * The connected Google Sheets account a call is made on behalf of. Every request
+ * goes through the Pipedream Connect proxy, which attaches that account's
+ * credentials and refreshes them — so no Google token is ever held here.
  */
-export type SheetsCredential =
-  | { via: 'pipedream'; externalUserId: string; accountId: string }
-  | { via: 'token'; accessToken: string };
-
-/**
- * Whether a failure is Pipedream refusing to forward to a domain that is not on
- * the connected app's allowlist. Pipedream raises this *before* contacting the
- * target, so the request provably never reached Google — which makes it the one
- * proxy failure a caller may safely retry on another transport without risking
- * a duplicate write.
- */
-export function isProxyDomainRejection(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /is not allowed for this app/i.test(message);
+export interface SheetsCredential {
+  externalUserId: string;
+  accountId: string;
 }
 
 /** A cell as we write it. Nulls become blanks rather than the string "null". */
@@ -71,16 +56,15 @@ interface SpreadsheetMeta {
  * as {@link MetaAdsService} and {@link StripeService}: the caller passes the
  * {@link SheetsCredential} resolved from the workspace's connected account.
  *
- * Requests go through the Pipedream Connect proxy by default, so Pipedream owns
- * the credential and its refresh; the direct-to-Google transport is the
- * fallback. Both speak the same Sheets API, so the call shapes below are
- * transport-independent.
+ * Every request goes through the Pipedream Connect proxy. Pipedream is the
+ * integration layer of record, so it owns the Google credential and its refresh
+ * — there is deliberately no direct-to-Google path holding a token of our own.
  *
- * This exists rather than driving Pipedream's Google Sheets MCP tools because an
- * export must be deterministic and runnable with no model in the loop — a
- * scheduled export fires at 2am with nobody to correct a misapplied tool call.
- * The proxy gives us Pipedream's credential handling without handing the
- * sequence of calls to a model.
+ * The calls are made here rather than through Pipedream's Google Sheets MCP
+ * tools because an export must be deterministic and runnable with no model in
+ * the loop — a scheduled export fires at 2am with nobody to correct a misapplied
+ * tool call. The proxy gives us Pipedream's credential handling without handing
+ * the sequence of calls to a model.
  */
 @Injectable()
 export class SheetsService {
@@ -231,10 +215,12 @@ export class SheetsService {
   }
 
   /**
-   * Issue a request against the Sheets API over whichever transport the
-   * credential names, normalising both into the same thrown Error so callers
-   * never care which one ran. Scope problems land here as 403s, the common
-   * failure when the connected Google account granted read-only access.
+   * Issue a request against the Sheets API through the Pipedream Connect proxy,
+   * which attaches the connected account's credentials. Pipedream raises a
+   * non-2xx from Google as a thrown error carrying Google's own message; a
+   * proxied 200 can still wrap an error envelope, so both are normalised into
+   * one thrown Error. Scope problems arrive as 403s — the common failure when
+   * the connected Google account granted read-only access.
    */
   private async request<T>(
     path: string,
@@ -243,63 +229,17 @@ export class SheetsService {
   ): Promise<T> {
     const method = options.method ?? 'GET';
     try {
-      return credential.via === 'pipedream'
-        ? await this.viaPipedream<T>(path, credential, method, options.body)
-        : await this.viaGoogle<T>(path, credential.accessToken, method, options.body);
+      const response = await this.pipedream.proxyRequest<
+        { error?: { message?: string } } & Record<string, unknown>
+      >(credential, { url: `${SHEETS_BASE}${path}`, method, body: options.body });
+      if (response?.error) {
+        throw new Error(response.error.message ?? 'Google Sheets API error');
+      }
+      return response as T;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.logger.warn(
-        `Sheets ${method} ${path.split('?')[0]} failed via ${credential.via}: ${message}`,
-      );
+      this.logger.warn(`Sheets ${method} ${path.split('?')[0]} failed: ${message}`);
       throw error instanceof Error ? error : new Error(message);
     }
-  }
-
-  /**
-   * The preferred transport: Pipedream forwards the call to Google with the
-   * connected account's credentials attached. The proxy returns the target's
-   * parsed body, so a Google error envelope still arrives here and is raised the
-   * same way the direct transport raises it.
-   */
-  private async viaPipedream<T>(
-    path: string,
-    credential: Extract<SheetsCredential, { via: 'pipedream' }>,
-    method: 'GET' | 'POST',
-    body?: Record<string, unknown>,
-  ): Promise<T> {
-    const response = await this.pipedream.proxyRequest<
-      { error?: { message?: string } } & Record<string, unknown>
-    >(
-      { externalUserId: credential.externalUserId, accountId: credential.accountId },
-      { url: `${SHEETS_BASE}${path}`, method, body },
-    );
-    if (response?.error) {
-      throw new Error(response.error.message ?? 'Google Sheets API error');
-    }
-    return response as T;
-  }
-
-  /** Fallback transport: straight to Google with a stored OAuth token. */
-  private async viaGoogle<T>(
-    path: string,
-    accessToken: string,
-    method: 'GET' | 'POST',
-    body?: Record<string, unknown>,
-  ): Promise<T> {
-    const res = await fetch(`${SHEETS_BASE}${path}`, {
-      method,
-      headers: {
-        authorization: `Bearer ${accessToken}`,
-        ...(body ? { 'content-type': 'application/json' } : {}),
-      },
-      body: body ? JSON.stringify(body) : undefined,
-    });
-    const parsed = (await res.json().catch(() => ({}))) as {
-      error?: { message?: string; status?: string };
-    } & Record<string, unknown>;
-    if (!res.ok || parsed.error) {
-      throw new Error(parsed.error?.message ?? `Google Sheets API error (HTTP ${res.status})`);
-    }
-    return parsed as T;
   }
 }

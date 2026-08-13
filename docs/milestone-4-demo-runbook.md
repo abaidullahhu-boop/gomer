@@ -54,24 +54,24 @@ happens, revoke at myaccount.google.com/permissions and reconnect.
 Meta Ads and Stripe should already be connected from the Milestone 3 demo. The
 campaign-performance export needs Meta; the verified-ROAS export needs both.
 
-### Verify the proxy before you record
+### Verify the proxy before you record — this one is a hard gate
 
-Sheets calls go through the **Pipedream Connect proxy**, so Pipedream holds the
-Google credential and refreshes it — we never store a Google token. Pipedream
-allowlists proxy destinations **per app**, and that is worth confirming once for
-`google_sheets` before filming:
+Every Sheets call goes through the **Pipedream Connect proxy**, and there is no
+other path: Pipedream holds the Google credential and refreshes it, and we never
+store a Google token. Pipedream allowlists proxy destinations **per app**, so if
+`google_sheets` is not allowed to reach `sheets.googleapis.com`, exports do not
+work at all. Confirm it before filming:
 
 ```sh
-npm run probe:sheets              # read-only: proves the proxy reaches Google
+npm run probe:sheets                 # read-only: proves the proxy reaches Google
 PROBE_WRITE=1 npm run probe:sheets   # also creates a throwaway sheet
 ```
 
 A Google `404` for the fake id is the **good** result — it means the proxy
 forwarded an authenticated request. `Domain sheets.googleapis.com is not allowed
-for this app` means Pipedream will not proxy to Sheets for this app; the export
-then falls back to calling Google directly with the stored token, which still
-works but is the path we would rather not be on. (Measured: the `google` app is
-rejected for that domain, so do not substitute it for `google_sheets`.)
+for this app` is a stop sign: raise it with Pipedream before recording, because
+nothing downstream will work. (Measured: the `google` app *is* rejected for that
+domain, so do not substitute it for `google_sheets`.)
 
 ---
 
@@ -149,7 +149,7 @@ through the DO app console — there is no external route to `gomer-db`.)
 |---|---|---|
 | "Google Sheets isn't connected" | Connection was made Private | Disconnect, reconnect as Team |
 | `insufficient authentication scopes` | Read-only Google grant | Revoke at myaccount.google.com/permissions, reconnect, grant write |
-| `Domain … is not allowed for this app` | Pipedream won't proxy to Sheets for this app | Nothing to do mid-demo — the export falls back to a direct Google call automatically. Raise it with Pipedream afterwards. |
+| `Domain … is not allowed for this app` | Pipedream won't proxy to Sheets for this app | Not fixable mid-demo — exports have no other path. Stop, raise it with Pipedream, re-record. `npm run probe:sheets` catches this beforehand. |
 | Export tools missing entirely | Deploy didn't land | Check the deployed commit; re-record after it does |
 | Second spreadsheet created on message 4 | Sheet id wasn't remembered | Name the spreadsheet id explicitly, or ask Gomer to remember it first |
 | Rule confirmation never appears | Meta connection missing/expired | Reconnect Meta |

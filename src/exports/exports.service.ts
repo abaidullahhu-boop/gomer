@@ -6,12 +6,7 @@ import { ExportDataset, ScheduledExport } from '../database/entities';
 import { IntegrationsService } from '../integrations/integrations.service';
 import { MetaAdsService } from '../integrations/meta-ads.service';
 import { RoasService } from '../integrations/roas.service';
-import {
-  isProxyDomainRejection,
-  SheetsService,
-  type ExportTable,
-  type SheetWriteResult,
-} from '../integrations/sheets.service';
+import { SheetsService, type ExportTable } from '../integrations/sheets.service';
 import { RulesService } from '../rules/rules.service';
 import {
   CAMPAIGN_INSIGHT_FIELDS,
@@ -369,25 +364,9 @@ export class ExportsService {
       sheetTitle: request.sheetTitle ?? this.defaultSheetTitle(request.dataset),
     };
 
-    let written: SheetWriteResult;
-    try {
-      written = await this.sheets.writeTable(credential, destination, table);
-    } catch (error) {
-      // Pipedream refuses to forward to a domain that is not on the connected
-      // app's allowlist — and refuses before contacting Google, so nothing was
-      // written and retrying on the direct transport cannot duplicate rows. Any
-      // other failure may have partially landed, so it is never retried.
-      if (credential.via !== 'pipedream' || !isProxyDomainRejection(error)) throw error;
-      const accessToken = await this.integrationsService.getGoogleSheetsAccessToken(
-        workspaceId,
-        userId,
-      );
-      if (!accessToken) throw error;
-      this.logger.warn(
-        'Pipedream proxy rejected the Sheets domain for this app; falling back to a direct Google call.',
-      );
-      written = await this.sheets.writeTable({ via: 'token', accessToken }, destination, table);
-    }
+    // A failed write is never retried: it may have partially landed, and a
+    // second attempt would duplicate rows in the sheet.
+    const written = await this.sheets.writeTable(credential, destination, table);
     return { ...written, url: written.spreadsheetUrl };
   }
 

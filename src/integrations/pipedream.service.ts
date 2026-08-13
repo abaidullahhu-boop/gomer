@@ -32,6 +32,28 @@ const TOOL_PAGE_SIZE = 100;
  */
 const MAX_TOOL_PAGES = 20;
 
+/**
+ * Pull the actionable message out of a failed Connect proxy call.
+ *
+ * The SDK's own `message` is a `"Status code: N\nBody: {…}"` blob, which is what
+ * would otherwise reach a Slack failure notice. Two body shapes turn up in
+ * practice: the target API's envelope (`{error: {message}}` — Google and Stripe
+ * both use it) and Pipedream's own rejection (`{error: "…"}`, e.g. when a domain
+ * is not on the app's allowlist). Returns null when neither is present, so the
+ * caller can keep the original error.
+ */
+export function proxyErrorMessage(error: unknown): string | null {
+  const body = (error as { body?: unknown })?.body;
+  if (!body || typeof body !== 'object') return null;
+  const inner = (body as { error?: unknown }).error;
+  if (typeof inner === 'string') return inner;
+  if (inner && typeof inner === 'object') {
+    const message = (inner as { message?: unknown }).message;
+    if (typeof message === 'string') return message;
+  }
+  return null;
+}
+
 /** A connected app exposed to an LLM as a Pipedream MCP server. */
 export interface PipedreamMcpServer {
   appSlug: string;
@@ -202,27 +224,9 @@ export class PipedreamService implements OnModuleInit {
       // A non-2xx from the target app throws, carrying the target's own error
       // body. Raise that message rather than the SDK's "Status code: N / Body:
       // {…}" blob, which is what would otherwise reach a Slack failure notice.
-      const detail = this.proxyErrorMessage(error);
+      const detail = proxyErrorMessage(error);
       throw detail ? new Error(detail) : error;
     }
-  }
-
-  /**
-   * Pull the actionable message out of a failed proxy call. Two shapes turn up:
-   * the target API's envelope (`{error: {message}}`, used by Google and Stripe)
-   * and Pipedream's own rejection (`{error: "…"}`, e.g. when a domain is not on
-   * the app's allowlist). Returns null when neither is present.
-   */
-  private proxyErrorMessage(error: unknown): string | null {
-    const body = (error as { body?: unknown })?.body;
-    if (!body || typeof body !== 'object') return null;
-    const inner = (body as { error?: unknown }).error;
-    if (typeof inner === 'string') return inner;
-    if (inner && typeof inner === 'object') {
-      const message = (inner as { message?: unknown }).message;
-      if (typeof message === 'string') return message;
-    }
-    return null;
   }
 
   /** Revoke a connected account at Pipedream. */

@@ -529,54 +529,27 @@ export class IntegrationsService {
   }
 
   /**
-   * Resolve how the export automation should reach the member's Google Sheets
-   * connection.
+   * The member's Google Sheets connection, addressed the way the Connect proxy
+   * wants it: an external user id plus an account id. Pipedream authenticates
+   * the call from those, so no Google token is read or held here.
    *
-   * The Pipedream Connect proxy is preferred: Pipedream owns the credential and
-   * refreshes it, so we never hold a Google token and a rotated one can't go
-   * stale underneath us. The direct-token path is the fallback for when the
-   * proxy is unavailable — a connection whose credentials we can read still
-   * works rather than failing the export outright.
-   *
-   * Returns null when no usable Google Sheets account is connected.
+   * Returns null when no Google Sheets account is connected.
    */
   async getGoogleSheetsCredential(
     workspaceId: string,
     userId: string | null,
   ): Promise<SheetsCredential | null> {
     const connections = await this.visibleAppConnections(workspaceId, userId, 'google_sheets');
-
-    // Preferred path: hand Pipedream the account and let it authenticate.
-    const proxied = connections.find((row) => row.externalAccountId);
-    if (proxied) {
-      return {
-        via: 'pipedream',
-        externalUserId: this.resolveExternalUserId(
-          workspaceId,
-          proxied.userId,
-          proxied.accessLevel,
-        ),
-        accountId: proxied.externalAccountId!,
-      };
-    }
-
-    // Fallback: call Google directly with the stored OAuth token.
-    const accessToken = await this.getGoogleSheetsAccessToken(workspaceId, userId);
-    return accessToken ? { via: 'token', accessToken } : null;
-  }
-
-  /**
-   * The raw Google OAuth token behind the workspace's Sheets connection. Only
-   * for the direct-to-Google fallback — prefer
-   * {@link getGoogleSheetsCredential}, which routes through Pipedream.
-   */
-  async getGoogleSheetsAccessToken(
-    workspaceId: string,
-    userId: string | null,
-  ): Promise<string | null> {
-    return this.resolveAppCredential(workspaceId, userId, 'google_sheets', (credentials) =>
-      this.firstString(credentials.oauthAccessToken, credentials.oauth_access_token),
-    );
+    const connection = connections.find((row) => row.externalAccountId);
+    if (!connection) return null;
+    return {
+      externalUserId: this.resolveExternalUserId(
+        workspaceId,
+        connection.userId,
+        connection.accessLevel,
+      ),
+      accountId: connection.externalAccountId!,
+    };
   }
 
   /**
