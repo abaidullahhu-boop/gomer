@@ -12,6 +12,7 @@ import { META_ADS_TOOLS } from '../src/ai/meta-ads-tools';
 import { RULE_TOOLS } from '../src/ai/rule-tools';
 import { ROAS_TOOLS } from '../src/ai/roas-tools';
 import { MEMORY_TOOLS } from '../src/ai/memory-tools';
+import { SHEETS_TOOLS } from '../src/ai/sheets-tools';
 import { SPACE_TOOLS } from '../src/ai/space-tools';
 import { WORKSPACE_TOOLS } from '../src/ai/workspace-tools';
 
@@ -19,6 +20,7 @@ const GROUPS: Array<[string, ToolSpec[]]> = [
   ['meta_ads', META_ADS_TOOLS],
   ['rules', RULE_TOOLS],
   ['roas', ROAS_TOOLS],
+  ['sheets', SHEETS_TOOLS],
   ['memory', MEMORY_TOOLS],
   ['spaces', SPACE_TOOLS],
   ['workspace', WORKSPACE_TOOLS],

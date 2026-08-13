@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { MoreThan, Repository } from 'typeorm';
 import { RoasSnapshot } from '../database/entities';
 import { IntegrationsService } from './integrations.service';
 import { MetaAdsService } from './meta-ads.service';
@@ -175,6 +175,18 @@ export class RoasService {
     return this.snapshotRepository.find({
       where: { workspaceId },
       order: { createdAt: 'DESC' },
+      take: limit,
+    });
+  }
+
+  /**
+   * Snapshots verified after `since` (exclusive), oldest first — the shape a
+   * Sheets export appends, so a repeat run picks up only what is new.
+   */
+  snapshotsSince(workspaceId: string, since: Date, limit = 500): Promise<RoasSnapshot[]> {
+    return this.snapshotRepository.find({
+      where: { workspaceId, createdAt: MoreThan(since) },
+      order: { createdAt: 'ASC' },
       take: limit,
     });
   }

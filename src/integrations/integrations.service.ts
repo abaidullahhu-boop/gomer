@@ -520,14 +520,48 @@ export class IntegrationsService {
    * null when no usable Stripe account is connected.
    */
   async getStripeApiKey(workspaceId: string, userId: string | null): Promise<string | null> {
+    // Stripe connects with a secret key; cover the field spellings Pipedream uses
+    // for key-auth apps, plus OAuth token material as a fallback.
+    return this.resolveAppCredential(workspaceId, userId, 'stripe', (credentials) =>
+      this.firstString(credentials.api_key, credentials.apiKey, credentials.oauthAccessToken),
+    );
+  }
+
+  /**
+   * Resolve the OAuth access token of the member's visible Google Sheets
+   * connection, used by the export automation to write spreadsheets directly.
+   * Returns null when no usable Google Sheets account is connected.
+   */
+  async getGoogleSheetsAccessToken(
+    workspaceId: string,
+    userId: string | null,
+  ): Promise<string | null> {
+    return this.resolveAppCredential(workspaceId, userId, 'google_sheets', (credentials) =>
+      this.firstString(credentials.oauthAccessToken, credentials.oauth_access_token),
+    );
+  }
+
+  /**
+   * Pull a credential out of the workspace's connected account for one Pipedream
+   * app, so an app's API can be called directly (deterministic, server-side)
+   * instead of through MCP round-trips. Team accounts are tried before private
+   * ones — the shared connection is the workspace's source of truth — and an
+   * account whose credentials can't be read is skipped rather than fatal, so one
+   * broken connection doesn't mask a working one.
+   */
+  private async resolveAppCredential(
+    workspaceId: string,
+    userId: string | null,
+    appSlug: string,
+    pick: (credentials: Record<string, unknown>) => string | null,
+  ): Promise<string | null> {
     const visible = (await this.findVisibleForUser(workspaceId, userId)).filter(
       (row) =>
         row.isActive &&
         row.provider === 'pipedream' &&
-        row.appSlug === 'stripe' &&
+        row.appSlug === appSlug &&
         row.externalAccountId,
     );
-    // Team accounts first: the shared connection is the workspace's source of truth.
     visible.sort((a, b) =>
       a.accessLevel === b.accessLevel ? 0 : a.accessLevel === 'team' ? -1 : 1,
     );
@@ -535,14 +569,20 @@ export class IntegrationsService {
     for (const row of visible) {
       try {
         const credentials = await this.pipedream.getAccountCredentials(row.externalAccountId!);
-        // Stripe connects with a secret key; cover the field spellings Pipedream
-        // uses for key-auth apps, plus OAuth token material as a fallback.
-        const key = credentials?.api_key ?? credentials?.apiKey ?? credentials?.oauthAccessToken;
-        if (typeof key === 'string' && key) return key;
+        const value = credentials ? pick(credentials) : null;
+        if (value) return value;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        this.logger.warn(`Failed to read Stripe credentials for ${row.id}: ${message}`);
+        this.logger.warn(`Failed to read ${appSlug} credentials for ${row.id}: ${message}`);
       }
+    }
+    return null;
+  }
+
+  /** The first candidate that is a non-empty string, else null. */
+  private firstString(...candidates: unknown[]): string | null {
+    for (const candidate of candidates) {
+      if (typeof candidate === 'string' && candidate) return candidate;
     }
     return null;
   }

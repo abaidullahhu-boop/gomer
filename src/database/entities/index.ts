@@ -12,6 +12,7 @@ export * from './roas-snapshot.entity';
 export * from './ad-rule.entity';
 export * from './ad-rule-action.entity';
 export * from './anomaly-alert.entity';
+export * from './scheduled-export.entity';
 export * from './space.entity';
 export * from './space-user.entity';
 export * from './space-auth-token.entity';
@@ -25,6 +26,7 @@ import { AdRule } from './ad-rule.entity';
 import { AnomalyAlert } from './anomaly-alert.entity';
 import { Message } from './message.entity';
 import { RoasSnapshot } from './roas-snapshot.entity';
+import { ScheduledExport } from './scheduled-export.entity';
 import { ScheduledTask } from './scheduled-task.entity';
 import { Skill } from './skill.entity';
 import { SpaceAuthToken } from './space-auth-token.entity';
@@ -52,6 +54,7 @@ export const entities = [
   AdRule,
   AdRuleAction,
   AnomalyAlert,
+  ScheduledExport,
   Space,
   SpaceUser,
   SpaceAuthToken,

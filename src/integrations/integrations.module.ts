@@ -7,6 +7,7 @@ import { MetaAdsService } from './meta-ads.service';
 import { MetaMcpService } from './meta-mcp.service';
 import { PipedreamService } from './pipedream.service';
 import { RoasService } from './roas.service';
+import { SheetsService } from './sheets.service';
 import { StripeService } from './stripe.service';
 
 @Module({
@@ -18,6 +19,7 @@ import { StripeService } from './stripe.service';
     MetaMcpService,
     MetaAdsService,
     StripeService,
+    SheetsService,
     RoasService,
   ],
   exports: [
@@ -26,6 +28,7 @@ import { StripeService } from './stripe.service';
     MetaMcpService,
     MetaAdsService,
     StripeService,
+    SheetsService,
     RoasService,
   ],
 })

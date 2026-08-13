@@ -24,6 +24,7 @@ import {
 } from './providers/provider.interface';
 import { WorkspacesService } from '../workspaces/workspaces.service';
 import { CreditEventType } from '../common/enums';
+import type { ExportDataset } from '../database/entities';
 import {
   ConnectedIntegrationView,
   IntegrationsService,
@@ -33,6 +34,7 @@ import { ConversationTurn } from '../memory/messages.service';
 import { WorkspaceMemoryService } from '../memory/workspace-memory.service';
 import { PipedreamService } from '../integrations/pipedream.service';
 import { RoasService } from '../integrations/roas.service';
+import { ExportsService } from '../exports/exports.service';
 import { RulesService } from '../rules/rules.service';
 import { SpacesService } from '../spaces/spaces.service';
 import { UsageService } from '../usage/usage.service';
@@ -76,6 +78,15 @@ import {
   RULE_TOOLS,
   SET_AD_RULE_ACTIVE,
 } from './rule-tools';
+import {
+  CREATE_SCHEDULED_EXPORT,
+  DELETE_SCHEDULED_EXPORT,
+  EXPORT_TO_SHEET,
+  RUN_SCHEDULED_EXPORT_NOW,
+  SET_SCHEDULED_EXPORT_ACTIVE,
+  SHEETS_TOOL_NAMES,
+  SHEETS_TOOLS,
+} from './sheets-tools';
 import { SPACE_TOOLS } from './space-tools';
 import { GET_WORKSPACE_STATS, WORKSPACE_TOOLS } from './workspace-tools';
 
@@ -202,6 +213,7 @@ export class AiService {
     private readonly workspaceMemory: WorkspaceMemoryService,
     private readonly roasService: RoasService,
     private readonly rulesService: RulesService,
+    private readonly exportsService: ExportsService,
     private readonly anthropicProvider: AnthropicProvider,
     private readonly gatewayProvider: GatewayProvider,
     private readonly mcpBridge: McpBridgeService,
@@ -504,12 +516,16 @@ export class AiService {
     // Verified ROAS needs both sides: Meta for spend, Stripe for real revenue.
     const hasStripe = pipedreamConnected.some((c) => c.appSlug === 'stripe');
     const hasRoas = hasMeta && hasStripe;
+    // Export automation writes through the Sheets API directly, so it needs the
+    // workspace's own Google Sheets connection.
+    const hasSheets = pipedreamConnected.some((c) => c.appSlug === 'google_sheets');
     const localTools: ToolSpec[] = [
       ...LOCAL_TOOLS,
       ...(hasMeta ? META_ADS_TOOLS : []),
       ...(hasRoas ? ROAS_TOOLS : []),
       // The rule engine acts on Meta, so its tools ride along with a Meta account.
       ...(hasMeta ? RULE_TOOLS : []),
+      ...(hasSheets ? SHEETS_TOOLS : []),
     ];
 
     // The apps this run ended up with, filled in once the toolset is resolved
@@ -578,14 +594,18 @@ export class AiService {
         'Meta-only numbers, present both when they differ, and always mention its caveats (blended ' +
         'revenue, currency notes). Past results are queryable with list_roas_snapshots.';
     }
-    // Sheets-export guidance: nudge report answers toward the connected sheet.
-    if (pipedreamConnected.some((c) => c.appSlug === 'google_sheets')) {
+    // Sheets-export guidance rides along only when the export tools do.
+    if (hasSheets) {
       system +=
-        '\n\nGoogle Sheets is connected: you can export reports, insights, or ROAS history to a ' +
-        'spreadsheet with the Google Sheets tools (add rows / create a worksheet). When the user asks ' +
-        'for a recurring or shareable report, offer the export. Reuse a remembered sheet (e.g. an ' +
-        '"export_sheet_id" fact) instead of creating new spreadsheets each time, and remember the ' +
-        'sheet id the first time one is chosen.';
+        '\n\nGoogle Sheets is connected, so you can export reporting data to a spreadsheet. Use ' +
+        'export_to_sheet for a one-off report and create_scheduled_export for a recurring one ' +
+        '("every Monday put last week\'s numbers in the sheet") — a scheduled export runs on its ' +
+        'own and appends only new rows, so the sheet builds a history. Three datasets are ' +
+        'available: verified ROAS runs, Meta campaign performance, and rule-engine actions. For ' +
+        'anything else in a spreadsheet (reading a sheet, arbitrary rows, other data) use the ' +
+        'generic Google Sheets actions instead. Reuse a remembered sheet (e.g. an ' +
+        '"export_sheet_id" fact) instead of creating new spreadsheets each time, remember the ' +
+        'sheet id the first time one is created, and always give the user the spreadsheet link.';
     }
     // Rule-engine guidance rides along with a Meta connection.
     if (hasMeta) {
@@ -869,6 +889,7 @@ export class AiService {
     if (MEMORY_TOOL_NAMES.has(toolName)) return 'memory';
     if (ROAS_TOOL_NAMES.has(toolName)) return 'roas';
     if (RULE_TOOL_NAMES.has(toolName)) return 'rules';
+    if (SHEETS_TOOL_NAMES.has(toolName)) return 'google_sheets';
     return 'spaces';
   }
 
@@ -894,6 +915,9 @@ export class AiService {
     }
     if (RULE_TOOL_NAMES.has(toolUse.name)) {
       return this.runRuleTool(workspaceId, userId, toolUse);
+    }
+    if (SHEETS_TOOL_NAMES.has(toolUse.name)) {
+      return this.runSheetsTool(workspaceId, userId, toolUse);
     }
     return this.runSpaceTool(workspaceId, userId, toolUse, spaces);
   }
@@ -992,6 +1016,120 @@ export class AiService {
         type: 'tool_result',
         tool_use_id: toolUse.id,
         content: `Rule operation failed: ${message}`,
+        is_error: true,
+      };
+    }
+  }
+
+  /**
+   * Execute a Sheets export tool: write a dataset to a spreadsheet now, or
+   * manage the recurring exports that do it on a schedule. Writes only ever
+   * touch the workspace's own spreadsheet — nothing is spent and no connected ad
+   * account is changed — so these need no confirmation gate. A missing Sheets
+   * connection or an API error becomes an error result the model can relay.
+   */
+  private async runSheetsTool(
+    workspaceId: string,
+    userId: string | null,
+    toolUse: ToolCall,
+  ): Promise<LocalToolResult> {
+    const input = (toolUse.input ?? {}) as Record<string, unknown>;
+    const destination = {
+      spreadsheetId: (input.spreadsheet_id as string | undefined) ?? null,
+      spreadsheetTitle: (input.spreadsheet_title as string | undefined) ?? null,
+      sheetTitle: (input.sheet_title as string | undefined) ?? null,
+    };
+    try {
+      if (toolUse.name === EXPORT_TO_SHEET) {
+        const result = await this.exportsService.exportNow(workspaceId, userId, {
+          dataset: input.dataset as ExportDataset,
+          adAccountId: input.ad_account_id as string | undefined,
+          windowDays: input.window_days as number | undefined,
+          ...destination,
+        });
+        return {
+          type: 'tool_result',
+          tool_use_id: toolUse.id,
+          content: JSON.stringify(result),
+        };
+      }
+      if (toolUse.name === CREATE_SCHEDULED_EXPORT) {
+        const scheduled = await this.exportsService.create(workspaceId, userId, {
+          name: String(input.name),
+          dataset: input.dataset as ExportDataset,
+          adAccountId: input.ad_account_id as string | undefined,
+          windowDays: input.window_days as number | undefined,
+          cronExpression: String(input.cron_expression),
+          timezone: input.timezone as string | undefined,
+          slackChannelId: input.slack_channel_id as string | undefined,
+          ...destination,
+        });
+        return {
+          type: 'tool_result',
+          tool_use_id: toolUse.id,
+          content: `Export "${scheduled.name}" created (id ${scheduled.id}); first run ${
+            scheduled.nextRun ? scheduled.nextRun.toISOString() : 'unscheduled'
+          }.`,
+        };
+      }
+      if (toolUse.name === SET_SCHEDULED_EXPORT_ACTIVE) {
+        const scheduled = await this.exportsService.setActive(
+          workspaceId,
+          String(input.export_id),
+          Boolean(input.is_active),
+        );
+        return {
+          type: 'tool_result',
+          tool_use_id: toolUse.id,
+          content: `Export "${scheduled.name}" is now ${scheduled.isActive ? 'active' : 'paused'}.`,
+        };
+      }
+      if (toolUse.name === DELETE_SCHEDULED_EXPORT) {
+        await this.exportsService.remove(workspaceId, String(input.export_id));
+        return { type: 'tool_result', tool_use_id: toolUse.id, content: 'Export deleted.' };
+      }
+      if (toolUse.name === RUN_SCHEDULED_EXPORT_NOW) {
+        const report = await this.exportsService.runNow(workspaceId, String(input.export_id));
+        return {
+          type: 'tool_result',
+          tool_use_id: toolUse.id,
+          content:
+            report.message ??
+            `Export "${report.exportName}" ran with nothing new to add since its last run.`,
+        };
+      }
+      // Remaining export tool: list_scheduled_exports.
+      const exports = await this.exportsService.list(workspaceId);
+      return {
+        type: 'tool_result',
+        tool_use_id: toolUse.id,
+        content: JSON.stringify(
+          exports.map((scheduled) => ({
+            id: scheduled.id,
+            name: scheduled.name,
+            dataset: scheduled.dataset,
+            adAccountId: scheduled.adAccountId,
+            windowDays: scheduled.windowDays,
+            cronExpression: scheduled.cronExpression,
+            timezone: scheduled.timezone,
+            sheetTitle: scheduled.sheetTitle,
+            spreadsheetId: scheduled.spreadsheetId,
+            spreadsheetUrl: scheduled.spreadsheetUrl,
+            isActive: scheduled.isActive,
+            lastRun: scheduled.lastRun ? scheduled.lastRun.toISOString() : null,
+            nextRun: scheduled.nextRun ? scheduled.nextRun.toISOString() : null,
+            lastRowCount: scheduled.lastRowCount,
+            lastError: scheduled.lastError,
+          })),
+        ),
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`Sheets export tool ${toolUse.name} failed: ${message}`);
+      return {
+        type: 'tool_result',
+        tool_use_id: toolUse.id,
+        content: `Sheets export failed: ${message}`,
         is_error: true,
       };
     }

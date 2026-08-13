@@ -12,15 +12,8 @@ import {
 } from '../database/entities';
 import { IntegrationsService } from '../integrations/integrations.service';
 import { MetaAdsService } from '../integrations/meta-ads.service';
+import { pickPurchaseValue } from '../integrations/meta-metrics';
 import { RoasService } from '../integrations/roas.service';
-
-/** Meta `action_type`s that count as a purchase, for CPA/ROAS extraction. */
-const PURCHASE_ACTION_TYPES = new Set([
-  'purchase',
-  'omni_purchase',
-  'offsite_conversion.fb_pixel_purchase',
-  'onsite_web_purchase',
-]);
 
 /** Fields requested from Meta insights (extra ones are ignored per level). */
 const INSIGHT_FIELDS = [
@@ -170,6 +163,20 @@ export class RulesService {
     return this.actionRepository.find({
       where: { ruleId },
       order: { createdAt: 'DESC' },
+      take: limit,
+    });
+  }
+
+  /**
+   * Every rule action across the workspace, oldest first and with the owning
+   * rule joined — the shape a Sheets export appends. `since` (exclusive) lets a
+   * repeat export pick up only what has happened since its last run.
+   */
+  actionsForWorkspace(workspaceId: string, since: Date, limit = 500): Promise<AdRuleAction[]> {
+    return this.actionRepository.find({
+      where: { workspaceId, createdAt: MoreThan(since) },
+      relations: { rule: true },
+      order: { createdAt: 'ASC' },
       take: limit,
     });
   }
@@ -390,11 +397,11 @@ export class RulesService {
       case 'cpc':
         return row.cpc != null ? Number(row.cpc) : null;
       case 'roas': {
-        const roas = this.pickPurchase(row.purchase_roas);
+        const roas = pickPurchaseValue(row.purchase_roas);
         return roas ?? 0;
       }
       case 'cpa': {
-        const cpa = this.pickPurchase(row.cost_per_action_type);
+        const cpa = pickPurchaseValue(row.cost_per_action_type);
         if (cpa != null) return cpa;
         // No purchases recorded: spend with zero sales is an infinite CPA (a
         // "CPA > X" rule should catch it); no spend means there's nothing to say.
@@ -403,15 +410,6 @@ export class RulesService {
       default:
         return null;
     }
-  }
-
-  /** The value of the purchase entry in a Meta typed-value array, if present. */
-  private pickPurchase(entries?: Array<{ action_type: string; value: string }>): number | null {
-    if (!entries?.length) return null;
-    const hit =
-      entries.find((entry) => PURCHASE_ACTION_TYPES.has(entry.action_type)) ??
-      entries.find((entry) => entry.action_type.includes('purchase'));
-    return hit ? Number(hit.value) : null;
   }
 
   private breaches(value: number, rule: AdRule): boolean {

@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { ExportsModule } from '../exports/exports.module';
 import { IntegrationsModule } from '../integrations/integrations.module';
 import { MemoryModule } from '../memory/memory.module';
 import { RulesModule } from '../rules/rules.module';
@@ -16,6 +17,7 @@ import { ToolRouterService } from './providers/tool-router.service';
 
 @Module({
   imports: [
+    ExportsModule,
     IntegrationsModule,
     MemoryModule,
     RulesModule,

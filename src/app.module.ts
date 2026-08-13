@@ -12,6 +12,7 @@ import { LoggingInterceptor } from './common/interceptors';
 import { configuration } from './config/configuration';
 import { validateEnv } from './config/env.validation';
 import { DatabaseModule } from './database/database.module';
+import { ExportsSchedulerModule } from './exports/exports-scheduler.module';
 import { HealthModule } from './health/health.module';
 import { IntegrationsModule } from './integrations/integrations.module';
 import { MonitoringSchedulerModule } from './monitoring/monitoring-scheduler.module';
@@ -47,6 +48,7 @@ import { WorkspacesModule } from './workspaces/workspaces.module';
     SlackModule,
     RulesSchedulerModule,
     MonitoringSchedulerModule,
+    ExportsSchedulerModule,
     UsageModule,
     BillingModule,
     AdminModule,
