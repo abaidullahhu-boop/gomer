@@ -26,6 +26,7 @@
     "probe:route": "TS_NODE_COMPILER_OPTIONS='{\"module\":\"commonjs\",\"moduleResolution\":\"node\"}' ts-node -T scripts/route-probe.ts",
     "catalog:build": "TS_NODE_COMPILER_OPTIONS='{\"module\":\"commonjs\",\"moduleResolution\":\"node\"}' ts-node -T scripts/build-integration-catalog.ts",
     "probe:allowlist": "TS_NODE_COMPILER_OPTIONS='{\"module\":\"commonjs\",\"moduleResolution\":\"node\"}' ts-node -T scripts/mcp-allowlist-probe.ts",
+    "probe:sheets": "TS_NODE_COMPILER_OPTIONS='{\"module\":\"commonjs\",\"moduleResolution\":\"node\"}' ts-node -T scripts/sheets-proxy-probe.ts",
     "deployed": "bash scripts/deployed-commit.sh"
   },
   "dependencies": {

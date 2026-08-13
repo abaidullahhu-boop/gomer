@@ -171,6 +171,60 @@ export class PipedreamService implements OnModuleInit {
     });
   }
 
+  /**
+   * Forward an authenticated request to a connected app's own API through the
+   * Pipedream Connect proxy. Pipedream attaches the account's credentials and
+   * refreshes them when needed, so the caller never handles a token — the
+   * preferred way to make a deterministic, server-side API call against a
+   * connected app.
+   *
+   * Errors are surfaced as-is rather than translated to HTTP exceptions: these
+   * calls sit behind tools and schedulers that report failures in their own
+   * shape, not behind a controller.
+   */
+  async proxyRequest<T>(
+    target: { externalUserId: string; accountId: string },
+    request: { url: string; method?: 'GET' | 'POST'; body?: Record<string, unknown> },
+  ): Promise<T> {
+    const client = this.getClient();
+    const common = {
+      url: request.url,
+      externalUserId: target.externalUserId,
+      accountId: target.accountId,
+    };
+    try {
+      const response =
+        request.method === 'POST'
+          ? await client.proxy.post({ ...common, body: request.body ?? {} }, REQUEST_OPTIONS)
+          : await client.proxy.get(common, REQUEST_OPTIONS);
+      return response as T;
+    } catch (error) {
+      // A non-2xx from the target app throws, carrying the target's own error
+      // body. Raise that message rather than the SDK's "Status code: N / Body:
+      // {…}" blob, which is what would otherwise reach a Slack failure notice.
+      const detail = this.proxyErrorMessage(error);
+      throw detail ? new Error(detail) : error;
+    }
+  }
+
+  /**
+   * Pull the actionable message out of a failed proxy call. Two shapes turn up:
+   * the target API's envelope (`{error: {message}}`, used by Google and Stripe)
+   * and Pipedream's own rejection (`{error: "…"}`, e.g. when a domain is not on
+   * the app's allowlist). Returns null when neither is present.
+   */
+  private proxyErrorMessage(error: unknown): string | null {
+    const body = (error as { body?: unknown })?.body;
+    if (!body || typeof body !== 'object') return null;
+    const inner = (body as { error?: unknown }).error;
+    if (typeof inner === 'string') return inner;
+    if (inner && typeof inner === 'object') {
+      const message = (inner as { message?: unknown }).message;
+      if (typeof message === 'string') return message;
+    }
+    return null;
+  }
+
   /** Revoke a connected account at Pipedream. */
   async deleteAccount(accountId: string): Promise<void> {
     await this.run('accounts.delete', (client) =>

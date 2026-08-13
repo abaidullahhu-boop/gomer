@@ -1,6 +1,32 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { PipedreamService } from './pipedream.service';
 
 const SHEETS_BASE = 'https://sheets.googleapis.com/v4/spreadsheets';
+
+/**
+ * How a Sheets call is authenticated.
+ *
+ * `pipedream` is the path we want: the request goes through the Connect proxy,
+ * which attaches the connected account's credentials and refreshes them, so no
+ * Google token is ever held here. `token` calls Google directly with a stored
+ * OAuth token — kept as the fallback for when the proxy is unavailable, so a
+ * workspace whose credentials we can read still exports rather than failing.
+ */
+export type SheetsCredential =
+  | { via: 'pipedream'; externalUserId: string; accountId: string }
+  | { via: 'token'; accessToken: string };
+
+/**
+ * Whether a failure is Pipedream refusing to forward to a domain that is not on
+ * the connected app's allowlist. Pipedream raises this *before* contacting the
+ * target, so the request provably never reached Google — which makes it the one
+ * proxy failure a caller may safely retry on another transport without risking
+ * a duplicate write.
+ */
+export function isProxyDomainRejection(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /is not allowed for this app/i.test(message);
+}
 
 /** A cell as we write it. Nulls become blanks rather than the string "null". */
 export type CellValue = string | number | null;
@@ -43,16 +69,24 @@ interface SpreadsheetMeta {
  * A thin client for the Google Sheets API v4, used by the export automation to
  * write Gomer's own reporting data into a spreadsheet. Stateless in the same way
  * as {@link MetaAdsService} and {@link StripeService}: the caller passes the
- * OAuth access token resolved from the workspace's Pipedream-connected Google
- * Sheets account.
+ * {@link SheetsCredential} resolved from the workspace's connected account.
+ *
+ * Requests go through the Pipedream Connect proxy by default, so Pipedream owns
+ * the credential and its refresh; the direct-to-Google transport is the
+ * fallback. Both speak the same Sheets API, so the call shapes below are
+ * transport-independent.
  *
  * This exists rather than driving Pipedream's Google Sheets MCP tools because an
  * export must be deterministic and runnable with no model in the loop — a
  * scheduled export fires at 2am with nobody to correct a misapplied tool call.
+ * The proxy gives us Pipedream's credential handling without handing the
+ * sequence of calls to a model.
  */
 @Injectable()
 export class SheetsService {
   private readonly logger = new Logger(SheetsService.name);
+
+  constructor(private readonly pipedream: PipedreamService) {}
 
   /**
    * Write a table to its destination: create the spreadsheet if needed, create
@@ -61,7 +95,7 @@ export class SheetsService {
    * scheduled export with nothing new to say leaves a usable sheet behind.
    */
   async writeTable(
-    accessToken: string,
+    credential: SheetsCredential,
     destination: SheetDestination,
     table: ExportTable,
   ): Promise<SheetWriteResult> {
@@ -71,7 +105,7 @@ export class SheetsService {
 
     if (!spreadsheetId) {
       const created = await this.createSpreadsheet(
-        accessToken,
+        credential,
         destination.spreadsheetTitle?.trim() || 'Gomer export',
         destination.sheetTitle,
       );
@@ -80,26 +114,26 @@ export class SheetsService {
       spreadsheetCreated = true;
     }
 
-    const meta = await this.getSpreadsheet(accessToken, spreadsheetId);
+    const meta = await this.getSpreadsheet(credential, spreadsheetId);
     spreadsheetUrl = meta.spreadsheetUrl ?? spreadsheetUrl ?? this.urlFor(spreadsheetId);
 
     const existingTitles = (meta.sheets ?? [])
       .map((sheet) => sheet.properties?.title)
       .filter((title): title is string => Boolean(title));
     if (!existingTitles.includes(destination.sheetTitle)) {
-      await this.addSheet(accessToken, spreadsheetId, destination.sheetTitle);
+      await this.addSheet(credential, spreadsheetId, destination.sheetTitle);
     }
 
     // Headers go in only once per tab, so appending to an established sheet
     // doesn't interleave header rows through the data.
     const headerWritten = !(await this.hasContent(
-      accessToken,
+      credential,
       spreadsheetId,
       destination.sheetTitle,
     ));
     const values = headerWritten ? [table.headers, ...table.rows] : table.rows;
     if (values.length) {
-      await this.append(accessToken, spreadsheetId, destination.sheetTitle, values);
+      await this.append(credential, spreadsheetId, destination.sheetTitle, values);
     }
 
     return {
@@ -114,11 +148,11 @@ export class SheetsService {
 
   /** Create a spreadsheet whose first tab carries the requested title. */
   async createSpreadsheet(
-    accessToken: string,
+    credential: SheetsCredential,
     title: string,
     sheetTitle: string,
   ): Promise<{ spreadsheetId: string; spreadsheetUrl: string }> {
-    const body = await this.request<SpreadsheetMeta>('', accessToken, {
+    const body = await this.request<SpreadsheetMeta>('', credential, {
       method: 'POST',
       body: {
         properties: { title },
@@ -132,20 +166,23 @@ export class SheetsService {
   }
 
   /** Spreadsheet metadata: its URL and the titles of its tabs. */
-  private getSpreadsheet(accessToken: string, spreadsheetId: string): Promise<SpreadsheetMeta> {
+  private getSpreadsheet(
+    credential: SheetsCredential,
+    spreadsheetId: string,
+  ): Promise<SpreadsheetMeta> {
     return this.request<SpreadsheetMeta>(
       `/${encodeURIComponent(spreadsheetId)}?fields=spreadsheetId,spreadsheetUrl,sheets.properties.title`,
-      accessToken,
+      credential,
     );
   }
 
   /** Add a tab to an existing spreadsheet. */
   private async addSheet(
-    accessToken: string,
+    credential: SheetsCredential,
     spreadsheetId: string,
     sheetTitle: string,
   ): Promise<void> {
-    await this.request(`/${encodeURIComponent(spreadsheetId)}:batchUpdate`, accessToken, {
+    await this.request(`/${encodeURIComponent(spreadsheetId)}:batchUpdate`, credential, {
       method: 'POST',
       body: { requests: [{ addSheet: { properties: { title: sheetTitle } } }] },
     });
@@ -153,21 +190,21 @@ export class SheetsService {
 
   /** Whether a tab already has anything in its first row. */
   private async hasContent(
-    accessToken: string,
+    credential: SheetsCredential,
     spreadsheetId: string,
     sheetTitle: string,
   ): Promise<boolean> {
     const range = encodeURIComponent(`${this.quoteTitle(sheetTitle)}!A1:A1`);
     const body = await this.request<{ values?: unknown[][] }>(
       `/${encodeURIComponent(spreadsheetId)}/values/${range}`,
-      accessToken,
+      credential,
     );
     return Boolean(body.values?.length);
   }
 
   /** Append rows below whatever the tab already holds. */
   private async append(
-    accessToken: string,
+    credential: SheetsCredential,
     spreadsheetId: string,
     sheetTitle: string,
     values: CellValue[][],
@@ -176,7 +213,7 @@ export class SheetsService {
     await this.request(
       `/${encodeURIComponent(spreadsheetId)}/values/${range}:append` +
         '?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS',
-      accessToken,
+      credential,
       {
         method: 'POST',
         body: { values: values.map((row) => row.map((cell) => cell ?? '')) },
@@ -194,34 +231,75 @@ export class SheetsService {
   }
 
   /**
-   * Issue a request against the Sheets API, translating Google's error envelope
-   * into a thrown Error the caller can surface. Scope problems land here as
-   * 403s, which is the common failure when the connected Google account granted
-   * read-only access.
+   * Issue a request against the Sheets API over whichever transport the
+   * credential names, normalising both into the same thrown Error so callers
+   * never care which one ran. Scope problems land here as 403s, the common
+   * failure when the connected Google account granted read-only access.
    */
   private async request<T>(
     path: string,
+    credential: SheetsCredential,
+    options: { method?: 'GET' | 'POST'; body?: Record<string, unknown> } = {},
+  ): Promise<T> {
+    const method = options.method ?? 'GET';
+    try {
+      return credential.via === 'pipedream'
+        ? await this.viaPipedream<T>(path, credential, method, options.body)
+        : await this.viaGoogle<T>(path, credential.accessToken, method, options.body);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(
+        `Sheets ${method} ${path.split('?')[0]} failed via ${credential.via}: ${message}`,
+      );
+      throw error instanceof Error ? error : new Error(message);
+    }
+  }
+
+  /**
+   * The preferred transport: Pipedream forwards the call to Google with the
+   * connected account's credentials attached. The proxy returns the target's
+   * parsed body, so a Google error envelope still arrives here and is raised the
+   * same way the direct transport raises it.
+   */
+  private async viaPipedream<T>(
+    path: string,
+    credential: Extract<SheetsCredential, { via: 'pipedream' }>,
+    method: 'GET' | 'POST',
+    body?: Record<string, unknown>,
+  ): Promise<T> {
+    const response = await this.pipedream.proxyRequest<
+      { error?: { message?: string } } & Record<string, unknown>
+    >(
+      { externalUserId: credential.externalUserId, accountId: credential.accountId },
+      { url: `${SHEETS_BASE}${path}`, method, body },
+    );
+    if (response?.error) {
+      throw new Error(response.error.message ?? 'Google Sheets API error');
+    }
+    return response as T;
+  }
+
+  /** Fallback transport: straight to Google with a stored OAuth token. */
+  private async viaGoogle<T>(
+    path: string,
     accessToken: string,
-    options: { method?: string; body?: unknown } = {},
+    method: 'GET' | 'POST',
+    body?: Record<string, unknown>,
   ): Promise<T> {
     const res = await fetch(`${SHEETS_BASE}${path}`, {
-      method: options.method ?? 'GET',
+      method,
       headers: {
         authorization: `Bearer ${accessToken}`,
-        ...(options.body ? { 'content-type': 'application/json' } : {}),
+        ...(body ? { 'content-type': 'application/json' } : {}),
       },
-      body: options.body ? JSON.stringify(options.body) : undefined,
+      body: body ? JSON.stringify(body) : undefined,
     });
-    const body = (await res.json().catch(() => ({}))) as {
+    const parsed = (await res.json().catch(() => ({}))) as {
       error?: { message?: string; status?: string };
     } & Record<string, unknown>;
-    if (!res.ok || body.error) {
-      const message = body.error?.message ?? `Google Sheets API error (HTTP ${res.status})`;
-      this.logger.warn(
-        `Sheets ${options.method ?? 'GET'} ${path.split('?')[0]} failed: ${message}`,
-      );
-      throw new Error(message);
+    if (!res.ok || parsed.error) {
+      throw new Error(parsed.error?.message ?? `Google Sheets API error (HTTP ${res.status})`);
     }
-    return body as T;
+    return parsed as T;
   }
 }
