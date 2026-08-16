@@ -176,13 +176,25 @@ export function creditRates(model: ModelDefinition): { input: number; output: nu
 }
 
 /**
- * Anthropic bills a cache write above the base input rate and a cache read far
- * below it (5-minute ephemeral cache — the TTL AnthropicProvider requests). A
- * run whose prompt is mostly a cache hit therefore costs a small fraction of
- * what the same token count would cost uncached, which is the whole point of
- * caching and the reason cost cannot be derived from a prompt size alone.
+ * The TTL every cache breakpoint asks for, and the write multiplier that TTL is
+ * billed at. The two are declared together because they cannot move
+ * independently: Anthropic bills a 1h write at 2x the base input rate where a
+ * 5m write is 1.25x, so changing one without the other silently misprices every
+ * cached run — and since we charge credits off this number, undercharging comes
+ * straight out of margin.
+ *
+ * 1h is the trade Slack asks for. A thread resumes on human time: the follow-up
+ * to an answer lands minutes or hours later, and under the 5-minute default
+ * every one of those was a full miss that re-paid a write at 1.25x rather than
+ * reading at 0.1x. Paying 2x once to read the rest of the conversation back all
+ * day is the cheaper side of that trade by a wide margin.
+ *
+ * A read stays a tenth of the input rate either way, so a run whose prompt is
+ * mostly a cache hit costs a small fraction of what its token count suggests —
+ * which is the reason cost cannot be derived from a prompt size alone.
  */
-const CACHE_WRITE_MULTIPLIER = 1.25;
+export const CACHE_TTL = '1h' as const;
+const CACHE_WRITE_MULTIPLIER = 2;
 const CACHE_READ_MULTIPLIER = 0.1;
 
 /** The cached slices of a run's prompt, as reported by the provider. */
