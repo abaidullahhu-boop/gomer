@@ -11,7 +11,7 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
-import { CurrentUser, Public } from '../common/decorators';
+import { CurrentUser, Public, RateLimit } from '../common/decorators';
 import { SpaceRecord, SpaceUser } from '../database/entities';
 import { RecordDataDto, RequestMagicLinkDto } from './dto';
 import { SpaceAuthGuard, SpaceRequest } from './guards/space-auth.guard';
@@ -71,8 +71,13 @@ export class SpacesController {
     return this.spacesService.findPublicBySlug(slug);
   }
 
-  /** Request a magic-link login for a Space end-user. */
+  /**
+   * Request a magic-link login for a Space end-user. Unauthenticated and it
+   * sends mail, so it is the one route an outsider could turn into a spam relay
+   * against a third party's inbox — rate limited per client address.
+   */
   @Public()
+  @RateLimit({ limit: 5, windowSeconds: 15 * 60 })
   @Post(':slug/auth/request-link')
   requestLink(
     @Param('slug') slug: string,
@@ -81,8 +86,13 @@ export class SpacesController {
     return this.spacesAuthService.requestLink(slug, dto.email);
   }
 
-  /** Redeem a magic-link token and receive a space session token. */
+  /**
+   * Redeem a magic-link token and receive a space session token. Limited
+   * because every attempt costs a bcrypt comparison, which is deliberately
+   * expensive and therefore a cheap way to burn server CPU.
+   */
   @Public()
+  @RateLimit({ limit: 20, windowSeconds: 15 * 60 })
   @Get(':slug/auth/verify')
   verify(@Param('slug') slug: string, @Query('token') token: string): Promise<SpaceSessionResult> {
     return this.spacesAuthService.verify(slug, token);

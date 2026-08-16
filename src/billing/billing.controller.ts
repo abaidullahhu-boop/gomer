@@ -1,7 +1,7 @@
 import { Body, Controller, Get, Headers, Post, RawBodyRequest, Req } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { Request } from 'express';
-import { CurrentUser, Public } from '../common/decorators';
+import { CurrentUser, Public, RateLimit } from '../common/decorators';
 import { UsageService } from '../usage/usage.service';
 import { BillingService } from './billing.service';
 import { TopupDto } from './dto';
@@ -24,7 +24,11 @@ export class BillingController {
     return { balance, packs: this.billingService.getPacks(), grants };
   }
 
-  /** Start a Stripe Checkout for a credit pack; returns the payment URL. */
+  /**
+   * Start a Stripe Checkout for a credit pack; returns the payment URL. Limited
+   * per member so a loop can't hammer Stripe's API on our account's quota.
+   */
+  @RateLimit({ limit: 15, windowSeconds: 15 * 60 })
   @Post('topup')
   topup(
     @CurrentUser('workspaceId') workspaceId: string,
