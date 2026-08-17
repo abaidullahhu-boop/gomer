@@ -2,6 +2,7 @@ import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config';
 import Anthropic from '@anthropic-ai/sdk';
 import { AppConfig } from '../../config/configuration';
+import { CACHE_TTL } from './model-catalog';
 import {
   LlmProvider,
   McpConnectionError,
@@ -21,9 +22,20 @@ const MAX_TOKENS = 8000;
 /**
  * Marks a cache breakpoint: everything rendered before it is stored and, on a
  * later request with a byte-identical prefix, billed at a tenth of the input
- * rate instead of full price.
+ * rate instead of full price. The TTL comes from the catalogue so it cannot
+ * drift from the write multiplier credits are charged at.
  */
-const CACHE: Anthropic.Beta.BetaCacheControlEphemeral = { type: 'ephemeral' };
+const CACHE: Anthropic.Beta.BetaCacheControlEphemeral = { type: 'ephemeral', ttl: CACHE_TTL };
+
+/**
+ * How many of the transcript's trailing user turns get a breakpoint. Two rather
+ * than one because a breakpoint only looks back twenty content blocks for an
+ * earlier entry to resume from, and a single agent-loop pass can append more
+ * than that in tool results alone — the older mark stays inside the window when
+ * the newer one has already been pushed out of it. Three total with the one on
+ * the system block, against a ceiling of four.
+ */
+const TRANSCRIPT_BREAKPOINTS = 2;
 
 /**
  * Anthropic adapter. Connected apps are handed over as server-side MCP servers,
@@ -148,9 +160,14 @@ export class AnthropicProvider implements LlmProvider {
   }
 
   /**
-   * Extends the cache over the transcript by marking its final block, so each
-   * pass of the agent loop reads back the turns the previous pass wrote instead
-   * of re-paying for the whole conversation.
+   * Extends the cache over the transcript by marking the last
+   * {@link TRANSCRIPT_BREAKPOINTS} user turns, so each pass of the agent loop
+   * reads back the turns the previous pass wrote instead of re-paying for the
+   * whole conversation.
+   *
+   * Walks from the end rather than looking only at the final turn: a pass that
+   * ends on an assistant turn still has cacheable user turns behind it, and
+   * marking them costs nothing while leaving a resume point for the next pass.
    *
    * Only user and tool-result turns are marked: assistant turns replay from
    * their original blocks, and Anthropic rejects a thinking block that has been
@@ -159,17 +176,25 @@ export class AnthropicProvider implements LlmProvider {
   private withTranscriptCache(
     messages: Anthropic.Beta.BetaMessageParam[],
   ): Anthropic.Beta.BetaMessageParam[] {
-    const last = messages[messages.length - 1];
-    if (!last || last.role !== 'user') return messages;
-    const blocks: Anthropic.Beta.BetaContentBlockParam[] =
-      typeof last.content === 'string' ? [{ type: 'text', text: last.content }] : [...last.content];
-    const tail = blocks[blocks.length - 1];
-    // Not every block type carries cache_control (a thinking block rejects it
-    // outright). Text and tool results are the only ones a user turn of ours
-    // ever ends on; anything else simply goes uncached rather than erroring.
-    if (tail?.type !== 'text' && tail?.type !== 'tool_result') return messages;
-    blocks[blocks.length - 1] = { ...tail, cache_control: CACHE };
-    return [...messages.slice(0, -1), { role: 'user', content: blocks }];
+    const marked = [...messages];
+    let remaining = TRANSCRIPT_BREAKPOINTS;
+    for (let i = marked.length - 1; i >= 0 && remaining > 0; i--) {
+      const message = marked[i];
+      if (message.role !== 'user') continue;
+      const blocks: Anthropic.Beta.BetaContentBlockParam[] =
+        typeof message.content === 'string'
+          ? [{ type: 'text', text: message.content }]
+          : [...message.content];
+      const tail = blocks[blocks.length - 1];
+      // Not every block type carries cache_control (a thinking block rejects it
+      // outright). Text and tool results are the only ones a user turn of ours
+      // ever ends on; anything else simply goes uncached rather than erroring.
+      if (tail?.type !== 'text' && tail?.type !== 'tool_result') continue;
+      blocks[blocks.length - 1] = { ...tail, cache_control: CACHE };
+      marked[i] = { role: 'user', content: blocks };
+      remaining--;
+    }
+    return marked;
   }
 
   private fromAnthropicMessage(response: Anthropic.Beta.BetaMessage): ProviderResponse {

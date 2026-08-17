@@ -6,9 +6,12 @@
  */
 import 'dotenv/config';
 import Anthropic from '@anthropic-ai/sdk';
+import { CACHE_TTL } from '../src/ai/providers/model-catalog';
 
 const MCP_BETA = 'mcp-client-2025-11-20';
-const CACHE = { type: 'ephemeral' as const };
+// Same shape the provider sends, TTL included — a probe that asks for a
+// different cache than production is not measuring production.
+const CACHE = { type: 'ephemeral' as const, ttl: CACHE_TTL };
 
 // Stand-in for the real system prompt; padded past the 1024-token minimum.
 const SYSTEM = `You are Gomer, an AI assistant for a workspace. You can take actions across the user's connected apps using the available tools. Prefer acting over describing: when a request maps to a tool, use it.\n\n${'Operational guidance for campaign management, budgets, and reporting. '.repeat(120)}`;
@@ -47,9 +50,15 @@ async function main(): Promise<void> {
       betas: [MCP_BETA],
     });
     const u = response.usage;
+    // The per-TTL split confirms the breakpoint was actually stored at the TTL
+    // we asked for: a write landing in the 5m bucket means the ttl never took,
+    // and credits would then be charged at 2x for a cache that dies in minutes.
+    const oneHour = u.cache_creation?.ephemeral_1h_input_tokens ?? 0;
+    const fiveMin = u.cache_creation?.ephemeral_5m_input_tokens ?? 0;
     console.log(
       `${label.padEnd(28)} uncached=${u.input_tokens}  ` +
-        `write=${u.cache_creation_input_tokens ?? 0}  read=${u.cache_read_input_tokens ?? 0}`,
+        `write=${u.cache_creation_input_tokens ?? 0} (1h=${oneHour} 5m=${fiveMin})  ` +
+        `read=${u.cache_read_input_tokens ?? 0}`,
     );
   }
 }
