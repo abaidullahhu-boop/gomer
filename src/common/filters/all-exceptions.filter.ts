@@ -7,6 +7,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
+import { redactUrl } from '../interceptors/logging.interceptor';
 
 interface ErrorResponseBody {
   statusCode: number;
@@ -34,10 +35,13 @@ export class AllExceptionsFilter implements ExceptionFilter {
       exception instanceof HttpException ? exception.getStatus() : HttpStatus.INTERNAL_SERVER_ERROR;
 
     const { message, error } = this.resolveMessage(exception, status);
+    // A failing request is exactly the one whose URL gets read later, so the
+    // same masking the request log applies is applied here too.
+    const path = redactUrl(request.url);
 
     if (status >= HttpStatus.INTERNAL_SERVER_ERROR) {
       this.logger.error(
-        `${request.method} ${request.url} -> ${status}`,
+        `${request.method} ${path} -> ${status}`,
         exception instanceof Error ? exception.stack : String(exception),
       );
     }
@@ -45,7 +49,7 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const body: ErrorResponseBody = {
       statusCode: status,
       timestamp: new Date().toISOString(),
-      path: request.url,
+      path,
       method: request.method,
       message,
       error,

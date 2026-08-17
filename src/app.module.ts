@@ -7,7 +7,7 @@ import { AiModule } from './ai/ai.module';
 import { AuthModule } from './auth/auth.module';
 import { BillingModule } from './billing/billing.module';
 import { AllExceptionsFilter } from './common/filters';
-import { JwtAuthGuard, RolesGuard } from './common/guards';
+import { JwtAuthGuard, RateLimitGuard, RolesGuard } from './common/guards';
 import { LoggingInterceptor } from './common/interceptors';
 import { configuration } from './config/configuration';
 import { validateEnv } from './config/env.validation';
@@ -59,6 +59,8 @@ import { WorkspacesModule } from './workspaces/workspaces.module';
     { provide: APP_GUARD, useClass: JwtAuthGuard },
     // Global authorization: enforces @Roles() where present.
     { provide: APP_GUARD, useClass: RolesGuard },
+    // Enforces @RateLimit() where present; no-op on routes without it.
+    { provide: APP_GUARD, useClass: RateLimitGuard },
     // Consistent error shape across the app.
     { provide: APP_FILTER, useClass: AllExceptionsFilter },
     // Per-request logging.

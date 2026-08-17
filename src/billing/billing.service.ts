@@ -35,6 +35,16 @@ export const CREDIT_PACKS: CreditPack[] = [
   { id: 'pro', label: 'Pro — $250', amountCents: 25000, credits: 25000 },
 ];
 
+/** Postgres `unique_violation`, raised when a duplicate grant loses the race. */
+function isUniqueViolation(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    ((error as { code?: string }).code === '23505' ||
+      (error as { driverError?: { code?: string } }).driverError?.code === '23505')
+  );
+}
+
 /** The fields we read off a Stripe Checkout Session. */
 interface StripeCheckoutSession {
   id: string;
@@ -142,16 +152,26 @@ export class BillingService {
     if (session.payment_status && session.payment_status !== 'paid') return { received: true };
     if (await this.usageService.hasGrantForStripeSession(session.id)) return { received: true };
 
-    await this.usageService.grantCredits({
-      workspaceId,
-      userId: session.metadata?.userId ?? null,
-      reason: CreditGrantReason.TOPUP,
-      credits,
-      amountCents: session.amount_total ?? null,
-      currency: session.currency ?? null,
-      stripeSessionId: session.id,
-      note: `Top-up (${session.metadata?.packId ?? 'unknown pack'})`,
-    });
+    try {
+      await this.usageService.grantCredits({
+        workspaceId,
+        userId: session.metadata?.userId ?? null,
+        reason: CreditGrantReason.TOPUP,
+        credits,
+        amountCents: session.amount_total ?? null,
+        currency: session.currency ?? null,
+        stripeSessionId: session.id,
+        note: `Top-up (${session.metadata?.packId ?? 'unknown pack'})`,
+      });
+    } catch (error) {
+      // Two deliveries of the same session can both clear the check above and
+      // race to insert. The unique index on stripeSessionId settles it — the
+      // loser must still ack, or Stripe retries a payment that is already
+      // credited until the delivery is marked permanently failed.
+      if (!isUniqueViolation(error)) throw error;
+      this.logger.log(`Ignored a concurrent duplicate of Stripe session ${session.id}`);
+      return { received: true };
+    }
     this.logger.log(`Granted ${credits} credits to workspace ${workspaceId} (${session.id})`);
     return { received: true };
   }

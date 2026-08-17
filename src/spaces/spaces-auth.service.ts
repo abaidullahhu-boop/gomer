@@ -1,4 +1,4 @@
-import { ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -65,13 +65,14 @@ export class SpacesAuthService {
     const normalizedEmail = email.trim().toLowerCase();
 
     // When signup is closed, only previously-invited members may request a link.
+    // An uninvited address gets the same `{ sent: true }` an invited one does:
+    // answering differently would turn this open endpoint into a membership
+    // oracle for the app's user list. No link is minted or mailed.
     if (!space.spec.auth.allowSignup) {
       const member = await this.spaceUserRepository.findOne({
         where: { spaceId: space.id, email: normalizedEmail },
       });
-      if (!member) {
-        throw new ForbiddenException('This email is not invited to this app');
-      }
+      if (!member) return { sent: true };
     }
 
     // raw = "<tokenId>.<secret>": the id lets us locate the row, the secret is

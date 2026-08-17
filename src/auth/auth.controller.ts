@@ -13,7 +13,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Response } from 'express';
-import { CurrentUser, Public } from '../common/decorators';
+import { CurrentUser, Public, RateLimit } from '../common/decorators';
 import { AppConfig } from '../config/configuration';
 import { User } from '../database/entities';
 import { AuthService, AuthTokens, WorkspaceMembership } from './auth.service';
@@ -61,8 +61,14 @@ export class AuthController {
     res.redirect(redirectUrl.toString());
   }
 
-  /** Exchange a valid refresh token for a new access/refresh pair. */
+  /**
+   * Exchange a valid refresh token for a new access/refresh pair. Limited per
+   * client address: unauthenticated, and each call runs a bcrypt comparison.
+   * The ceiling is well clear of honest use — a session refreshes every 15
+   * minutes, not every few seconds.
+   */
   @Public()
+  @RateLimit({ limit: 30, windowSeconds: 15 * 60 })
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
   refresh(@Body() dto: RefreshTokenDto): Promise<{ accessToken: string; refreshToken: string }> {

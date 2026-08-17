@@ -11,6 +11,9 @@ export const IS_PUBLIC_KEY = 'isPublic';
 /** Passport strategy name for the access-token JWT strategy. */
 export const JWT_STRATEGY = 'jwt';
 
+/** Metadata key used by the @RateLimit() decorator and RateLimitGuard. */
+export const RATE_LIMIT_KEY = 'rateLimit';
+
 /** Injection token for the shared ioredis client. */
 export const REDIS_CLIENT = 'REDIS_CLIENT';
 
