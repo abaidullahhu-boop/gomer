@@ -156,9 +156,16 @@ through the DO app console — there is no external route to `gomer-db`.)
 
 ---
 
-## Known gap (flagged, not blocking)
+## Known gap — since closed for reading
 
-Rules, memory, ROAS snapshots, and exports are all managed **through chat only** —
-there is no dashboard page for them. Milestone 4 is scoped as backend work
-(Weeks 1–2 were the frontend), so this is consistent with the plan, but it is
-worth raising with the client if they expect a UI surface for these in Week 6.
+Rules, memory, ROAS snapshots, and exports were originally managed **through chat
+only**, with no dashboard page. Milestone 4 was scoped as backend work (Weeks 1–2
+were the frontend), so that was consistent with the plan.
+
+**Resolved in Week 6:** the dashboard's **Automations** page now reports all four
+— rules with their recent activity, scheduled reports, remembered facts, and
+verified-ROAS history. It is deliberately **read-only**: creating a rule
+conversationally makes Gomer state the metric, threshold, window, action and
+guardrails and ask for confirmation, which a form would reproduce worse. So the
+demo above is still the way to *create* these; the page is where you show what is
+running afterwards.

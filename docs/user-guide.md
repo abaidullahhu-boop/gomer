@@ -240,13 +240,16 @@ Slack is where the work happens; the dashboard is for setup and oversight.
 | **Integrations** | Connect and disconnect accounts, set Team or Private |
 | **Skills** | Install expertise packs — creative analysis, PMax audits, attribution diagnostics and similar — which Gomer draws on when relevant |
 | **Tasks** | Your scheduled prompts |
+| **Automations** | What Gomer runs unattended: rules and what they've triggered, scheduled reports, remembered facts, verified-ROAS history |
 | **Usage** | What's been spent, by whom, on what |
 | **Billing** | Credit balance, top-ups, full history |
 | **Admin** | Members, analytics, revenue (admins only) |
 
-Rules, memory, verified-ROAS history and scheduled exports are currently managed
-**through chat**, not the dashboard. Ask Gomer to list, change, or remove any of
-them.
+**Automations is read-only.** It shows you what's running; you still create and
+change these by asking Gomer, because it confirms the details with you first —
+the threshold, the window, the guardrails — and a form can't do that as well. So
+to add a rule or drop a remembered fact, just say so in Slack, then check this
+page to see it.
 
 ---
 
