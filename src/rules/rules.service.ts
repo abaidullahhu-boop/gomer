@@ -168,6 +168,21 @@ export class RulesService {
   }
 
   /**
+   * The workspace's rule activity, newest first with the owning rule joined —
+   * the dashboard's "what have my rules been doing" feed. Distinct from
+   * {@link actionsForWorkspace}, which is ordered and windowed for appending to
+   * a spreadsheet rather than for reading on a screen.
+   */
+  recentActionsForWorkspace(workspaceId: string, limit = 50): Promise<AdRuleAction[]> {
+    return this.actionRepository.find({
+      where: { workspaceId },
+      relations: { rule: true },
+      order: { createdAt: 'DESC' },
+      take: limit,
+    });
+  }
+
+  /**
    * Every rule action across the workspace, oldest first and with the owning
    * rule joined — the shape a Sheets export appends. `since` (exclusive) lets a
    * repeat export pick up only what has happened since its last run.

@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { AdRule, AdRuleAction } from '../database/entities';
 import { IntegrationsModule } from '../integrations/integrations.module';
 import { RulesService } from './rules.service';
+import { RulesController } from './rules.controller';
 
 /**
  * The rule-engine core: {@link RulesService} (CRUD + evaluation). Deliberately
@@ -12,6 +13,7 @@ import { RulesService } from './rules.service';
  */
 @Module({
   imports: [TypeOrmModule.forFeature([AdRule, AdRuleAction]), IntegrationsModule],
+  controllers: [RulesController],
   providers: [RulesService],
   exports: [RulesService],
 })

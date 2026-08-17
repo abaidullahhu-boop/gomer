@@ -4,6 +4,7 @@ import { ScheduledExport } from '../database/entities';
 import { IntegrationsModule } from '../integrations/integrations.module';
 import { RulesModule } from '../rules/rules.module';
 import { ExportsService } from './exports.service';
+import { ExportsController } from './exports.controller';
 
 /**
  * The Google Sheets export core: {@link ExportsService} (one-off exports, CRUD
@@ -14,6 +15,7 @@ import { ExportsService } from './exports.service';
  */
 @Module({
   imports: [TypeOrmModule.forFeature([ScheduledExport]), IntegrationsModule, RulesModule],
+  controllers: [ExportsController],
   providers: [ExportsService],
   exports: [ExportsService],
 })

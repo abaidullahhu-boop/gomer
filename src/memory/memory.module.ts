@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { Message, WorkspaceMemory } from '../database/entities';
 import { MessagesService } from './messages.service';
 import { WorkspaceMemoryService } from './workspace-memory.service';
+import { MemoryController } from './memory.controller';
 
 /**
  * Gomer's memory layer: per-thread conversation history ({@link MessagesService})
@@ -10,6 +11,7 @@ import { WorkspaceMemoryService } from './workspace-memory.service';
  */
 @Module({
   imports: [TypeOrmModule.forFeature([Message, WorkspaceMemory])],
+  controllers: [MemoryController],
   providers: [MessagesService, WorkspaceMemoryService],
   exports: [MessagesService, WorkspaceMemoryService],
 })

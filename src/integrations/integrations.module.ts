@@ -9,10 +9,11 @@ import { PipedreamService } from './pipedream.service';
 import { RoasService } from './roas.service';
 import { SheetsService } from './sheets.service';
 import { StripeService } from './stripe.service';
+import { RoasController } from './roas.controller';
 
 @Module({
   imports: [TypeOrmModule.forFeature([Integration, RoasSnapshot])],
-  controllers: [IntegrationsController],
+  controllers: [IntegrationsController, RoasController],
   providers: [
     IntegrationsService,
     PipedreamService,
