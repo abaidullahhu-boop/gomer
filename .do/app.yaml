@@ -139,9 +139,20 @@ services:
         scope: RUN_TIME
         type: SECRET
         value: set-me-in-dashboard
-      # Billing is not enabled for this deploy. The app boots fine without
-      # these (they default to empty), but billing/top-up endpoints and the
-      # Stripe webhook will fail until real keys are set in the dashboard.
+      # DANGER: both Stripe secrets are live and set in the DigitalOcean
+      # dashboard. The empty values below are NOT the current state — applying
+      # this file (doctl apps update --spec, or any manual spec re-apply) will
+      # overwrite the real keys with an encrypted empty string and silently
+      # disable billing. Nothing detects that: checkout starts failing and the
+      # Stripe webhook starts rejecting deliveries.
+      #
+      # Ordinary git pushes are safe — DigitalOcean deploys new code against the
+      # stored spec and never reads this file. Only an explicit spec apply does
+      # the damage. If you must apply this spec, pull the live one first
+      # (doctl apps spec get <app-id>) and edit that instead.
+      #
+      # Symptom of having done it: POST /billing/webhook returns 503, which the
+      # DO edge rewrites to a 504 before it reaches the caller.
       - key: STRIPE_SECRET_KEY
         scope: RUN_TIME
         type: SECRET

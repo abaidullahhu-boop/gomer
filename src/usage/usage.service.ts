@@ -1,11 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { buildCatalog, creditRates, listCostUsd } from '../ai/providers/model-catalog';
 import { CreditEventType, CreditGrantReason } from '../common/enums';
 import { AppConfig } from '../config/configuration';
-import { CreditEvent, CreditGrant } from '../database/entities';
+import { UsersService } from '../users/users.service';
+import { CreditEvent, CreditGrant, ScheduledTask } from '../database/entities';
 
 export interface UsageSummary {
   totalCreditsUsed: number;
@@ -77,6 +78,39 @@ export interface GrantCreditsInput {
   note?: string | null;
 }
 
+/** A day in the usage series. Days with no events still appear, at zero. */
+export interface DailyCreditPoint {
+  day: string;
+  thread: number;
+  scheduledTask: number;
+  credits: number;
+}
+
+/**
+ * Pad a sparse series out to every day in the window.
+ *
+ * The group-by only returns days that saw events, so a quiet Sunday simply had
+ * no row — and the chart then drew the following Monday in its place, silently
+ * shifting every bar left and mislabelling the axis. Filling the gaps keeps one
+ * bar per calendar day.
+ */
+function zeroFilledDays(rows: DailyCreditPoint[], days: number): DailyCreditPoint[] {
+  const byDay = new Map(rows.map((row) => [row.day, row]));
+  const out: DailyCreditPoint[] = [];
+  const cursor = new Date();
+  cursor.setUTCHours(0, 0, 0, 0);
+  cursor.setUTCDate(cursor.getUTCDate() - (days - 1));
+  for (let i = 0; i < days; i += 1) {
+    const key = cursor.toISOString().slice(0, 10);
+    out.push(byDay.get(key) ?? { day: key, thread: 0, scheduledTask: 0, credits: 0 });
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return out;
+}
+
+/** How spend with no user attached — rules, scheduled tasks — is labelled. */
+export const SYSTEM_SPENDER_NAME = 'System (rules & tasks)';
+
 /**
  * Credit accounting: meters consumption into the immutable credit_events
  * ledger and additions into credit_grants; a workspace's balance is the
@@ -89,7 +123,10 @@ export class UsageService {
     private readonly creditEventRepository: Repository<CreditEvent>,
     @InjectRepository(CreditGrant)
     private readonly creditGrantRepository: Repository<CreditGrant>,
+    @InjectRepository(ScheduledTask)
+    private readonly scheduledTaskRepository: Repository<ScheduledTask>,
     private readonly configService: ConfigService<AppConfig, true>,
+    private readonly usersService: UsersService,
   ) {}
 
   private definitionFor(model: string) {
@@ -263,6 +300,162 @@ export class UsageService {
       credits: Number(row.credits),
       events: Number(row.events),
     }));
+  }
+
+  /**
+   * Credits spent per scheduled task, richest first, with the task's own
+   * details attached.
+   *
+   * The ScheduledTask entity is registered on this module directly rather than
+   * importing TasksModule: that module pulls in AiModule, which imports this
+   * one, so going through the service would close a dependency cycle.
+   *
+   * A task deleted since its runs were metered keeps its spend — the credits
+   * were really spent — and is named as removed rather than dropped, so the
+   * per-task figures still add up to the total.
+   */
+  async topTasks(workspaceId: string, days = 30, limit = 10) {
+    const rows = await this.creditEventRepository
+      .createQueryBuilder('event')
+      .select('event.taskId', 'taskId')
+      .addSelect('SUM(event.creditsUsed)', 'credits')
+      .addSelect('COUNT(event.id)', 'runs')
+      .addSelect('MAX(event.createdAt)', 'lastRun')
+      .where('event.workspaceId = :workspaceId', { workspaceId })
+      .andWhere('event.taskId IS NOT NULL')
+      .andWhere(`event.createdAt >= now() - make_interval(days => :days)`, { days })
+      .groupBy('event.taskId')
+      .orderBy('credits', 'DESC')
+      .limit(limit)
+      .getRawMany<{ taskId: string; credits: string; runs: string; lastRun: Date }>();
+    if (!rows.length) return [];
+
+    const tasks = await this.scheduledTaskRepository.find({
+      where: { id: In(rows.map((row) => row.taskId)) },
+    });
+    const byId = new Map(tasks.map((task) => [task.id, task]));
+
+    return rows.map((row) => {
+      const task = byId.get(row.taskId);
+      return {
+        taskId: row.taskId,
+        name: task?.name ?? 'Deleted task',
+        createdByUserId: task?.createdByUserId ?? null,
+        cronExpression: task?.cronExpression ?? null,
+        isActive: task?.isActive ?? false,
+        credits: Number(row.credits),
+        runs: Number(row.runs),
+        lastRun: row.lastRun ?? null,
+      };
+    });
+  }
+
+  /**
+   * Daily credits split by what spent them, for the stacked usage chart.
+   *
+   * Separate from {@link dailyUsage} rather than replacing it: that one feeds
+   * the admin tab and changing its shape would ripple there for no gain.
+   */
+  async dailyUsageSplit(
+    workspaceId: string,
+    days = 30,
+  ): Promise<Array<{ day: string; thread: number; scheduledTask: number; credits: number }>> {
+    const rows = await this.creditEventRepository
+      .createQueryBuilder('event')
+      .select(`to_char(date_trunc('day', event.createdAt), 'YYYY-MM-DD')`, 'day')
+      .addSelect('event.type', 'type')
+      .addSelect('SUM(event.creditsUsed)', 'credits')
+      .where('event.workspaceId = :workspaceId', { workspaceId })
+      .andWhere(`event.createdAt >= now() - make_interval(days => :days)`, { days })
+      .groupBy('day')
+      .addGroupBy('event.type')
+      .orderBy('day', 'ASC')
+      .getRawMany<{ day: string; type: string; credits: string }>();
+
+    const byDay = new Map<
+      string,
+      { day: string; thread: number; scheduledTask: number; credits: number }
+    >();
+    for (const row of rows) {
+      const entry = byDay.get(row.day) ?? { day: row.day, thread: 0, scheduledTask: 0, credits: 0 };
+      const credits = Number(row.credits);
+      if (row.type === CreditEventType.SCHEDULED_TASK) entry.scheduledTask += credits;
+      else entry.thread += credits;
+      entry.credits += credits;
+      byDay.set(row.day, entry);
+    }
+    return [...byDay.values()];
+  }
+
+  /**
+   * Credits split by what spent them: interactive threads vs unattended runs.
+   * Returned as raw totals; the caller decides how to present the proportion.
+   */
+  async creditsByType(
+    workspaceId: string,
+    days = 30,
+  ): Promise<{ thread: number; scheduledTask: number }> {
+    const rows = await this.creditEventRepository
+      .createQueryBuilder('event')
+      .select('event.type', 'type')
+      .addSelect('SUM(event.creditsUsed)', 'credits')
+      .where('event.workspaceId = :workspaceId', { workspaceId })
+      .andWhere(`event.createdAt >= now() - make_interval(days => :days)`, { days })
+      .groupBy('event.type')
+      .getRawMany<{ type: string; credits: string }>();
+    const creditsFor = (type: CreditEventType): number =>
+      Number(rows.find((row) => row.type === type)?.credits ?? 0);
+    return {
+      thread: creditsFor(CreditEventType.THREAD),
+      scheduledTask: creditsFor(CreditEventType.SCHEDULED_TASK),
+    };
+  }
+
+  /**
+   * The daily series plus the spender leaderboard, with user ids resolved to
+   * names — everything the Usage page renders.
+   *
+   * Unattributed spend (a null userId) is work the schedulers did on the
+   * workspace's behalf, not a person, and is labelled as such. Without that the
+   * heaviest "user" on most workspaces is a blank row.
+   *
+   * AdminService.analytics builds the same shape for the admin tab; the two
+   * should be folded together, but admin's is left alone here so this addition
+   * cannot change a page that already works.
+   */
+  async analyticsForWorkspace(workspaceId: string, days = 30) {
+    const [daily, spenders, members, byType, topTasks] = await Promise.all([
+      this.dailyUsageSplit(workspaceId, days),
+      this.topSpenders(workspaceId, days),
+      this.usersService.listAllByWorkspace(workspaceId),
+      this.creditsByType(workspaceId, days),
+      this.topTasks(workspaceId, days),
+    ]);
+    const totalCredits = daily.reduce((sum, row) => sum + row.credits, 0);
+    const series = zeroFilledDays(daily, days);
+    const nameById = new Map(
+      members.map((member) => [member.id, member.name ?? member.email ?? member.id]),
+    );
+    const avatarById = new Map(members.map((member) => [member.id, member.avatarUrl]));
+    return {
+      days,
+      daily: series,
+      totalCredits,
+      // Burn is over the whole window, not just the days that saw traffic — a
+      // quiet weekend is part of the rate, and averaging only active days would
+      // overstate it.
+      burnPerDay: days > 0 ? Math.round(totalCredits / days) : 0,
+      byType,
+      topTasks: topTasks.map((task) => ({
+        ...task,
+        createdByName: task.createdByUserId ? (nameById.get(task.createdByUserId) ?? null) : null,
+      })),
+      topSpenders: spenders.map((row) => ({
+        ...row,
+        name: row.userId ? (nameById.get(row.userId) ?? row.userId) : SYSTEM_SPENDER_NAME,
+        avatarUrl: row.userId ? (avatarById.get(row.userId) ?? null) : null,
+      })),
+    };
   }
 
   /** Grants aggregated by reason — the revenue overview's headline numbers. */
