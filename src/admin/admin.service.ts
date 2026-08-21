@@ -65,9 +65,14 @@ export class AdminService {
 
   /** Time series + leaderboard for the analytics tab. */
   async analytics(workspaceId: string, days = 30) {
+    // A trailing window is the right shape here — the admin tab asks "the last
+    // N days", not "this calendar month" — so the day count is converted at
+    // this boundary rather than pushed onto the shared aggregates.
+    const to = new Date();
+    const range = { from: new Date(to.getTime() - days * 24 * 60 * 60 * 1000), to };
     const [daily, spenders, members] = await Promise.all([
-      this.usageService.dailyUsage(workspaceId, days),
-      this.usageService.topSpenders(workspaceId, days),
+      this.usageService.dailyUsage(workspaceId, range),
+      this.usageService.topSpenders(workspaceId, range),
       this.usersService.listAllByWorkspace(workspaceId),
     ]);
     const nameById = new Map(members.map((m) => [m.id, m.name ?? m.email ?? m.id]));

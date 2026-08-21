@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { In, Repository } from 'typeorm';
+import { In, Repository, SelectQueryBuilder } from 'typeorm';
 import { buildCatalog, creditRates, listCostUsd } from '../ai/providers/model-catalog';
 import { CreditEventType, CreditGrantReason } from '../common/enums';
 import { AppConfig } from '../config/configuration';
@@ -78,6 +78,35 @@ export interface GrantCreditsInput {
   note?: string | null;
 }
 
+/**
+ * An explicit, inclusive window to report over.
+ *
+ * Replaces the trailing day-count the endpoints used to take. A count can only
+ * ever express "the last N days from now", which is exactly wrong for the two
+ * calendar options the period dropdown offers: "Last month" became a 30-day
+ * window overlapping the current one. The caller computes the boundaries and
+ * sends them, because it is the only side that knows the viewer's timezone —
+ * the Workspace entity has no timezone column, so the server picking "today"
+ * would be guessing.
+ */
+export interface DateRange {
+  from: Date;
+  to: Date;
+}
+
+/** One row of the activity feed, with its user and task already resolved. */
+export interface ActivityEntry {
+  id: string;
+  createdAt: Date;
+  type: CreditEventType;
+  sourceName: string;
+  model: string;
+  credits: number;
+  tokens: number;
+  user: { id: string; name: string; avatarUrl: string | null } | null;
+  task: { id: string; name: string } | null;
+}
+
 /** A day in the usage series. Days with no events still appear, at zero. */
 export interface DailyCreditPoint {
   day: string;
@@ -94,13 +123,17 @@ export interface DailyCreditPoint {
  * shifting every bar left and mislabelling the axis. Filling the gaps keeps one
  * bar per calendar day.
  */
-function zeroFilledDays(rows: DailyCreditPoint[], days: number): DailyCreditPoint[] {
+function zeroFilledDays(rows: DailyCreditPoint[], range: DateRange): DailyCreditPoint[] {
   const byDay = new Map(rows.map((row) => [row.day, row]));
   const out: DailyCreditPoint[] = [];
-  const cursor = new Date();
+  // Buckets are UTC days, matching the date_trunc the group-by applies. A
+  // range whose ends came from another timezone still lands on whole UTC days
+  // here, so the series has one bar per bucket the query could have produced.
+  const cursor = new Date(range.from);
   cursor.setUTCHours(0, 0, 0, 0);
-  cursor.setUTCDate(cursor.getUTCDate() - (days - 1));
-  for (let i = 0; i < days; i += 1) {
+  const last = new Date(range.to);
+  last.setUTCHours(0, 0, 0, 0);
+  while (cursor.getTime() <= last.getTime()) {
     const key = cursor.toISOString().slice(0, 10);
     out.push(byDay.get(key) ?? { day: key, thread: 0, scheduledTask: 0, credits: 0 });
     cursor.setUTCDate(cursor.getUTCDate() + 1);
@@ -254,19 +287,76 @@ export class UsageService {
     });
   }
 
-  /** Credits/tokens per day over the trailing window — the analytics chart. */
+  /**
+   * Recent spend with the person and the task behind each row resolved.
+   *
+   * {@link findRecentForWorkspace} returns bare entities whose userId and
+   * taskId are ids the page has no way to render, so the activity table would
+   * have had to fetch every name and avatar itself, one request per row. The
+   * relations are joined here instead.
+   *
+   * `taskId` narrows to a single task, which is what the Scheduled Tasks table
+   * links into — the row and the filtered view then agree by construction,
+   * because both are the same query.
+   */
+  async recentActivity(
+    workspaceId: string,
+    options: { taskId?: string; limit?: number } = {},
+  ): Promise<ActivityEntry[]> {
+    const events = await this.creditEventRepository.find({
+      where: { workspaceId, ...(options.taskId ? { taskId: options.taskId } : {}) },
+      relations: { user: true, task: true },
+      order: { createdAt: 'DESC' },
+      take: Math.min(Math.max(options.limit ?? 50, 1), 200),
+    });
+
+    return events.map((event) => ({
+      id: event.id,
+      createdAt: event.createdAt,
+      type: event.type,
+      sourceName: event.sourceName,
+      model: event.resolvedModel ?? event.model,
+      credits: event.creditsUsed,
+      tokens: event.tokensUsed,
+      // Spend with no user attached is the schedulers acting for the
+      // workspace, and is labelled the same way the leaderboard labels it.
+      user: event.user
+        ? {
+            id: event.user.id,
+            name: event.user.name || event.user.email || event.user.id,
+            avatarUrl: event.user.avatarUrl,
+          }
+        : null,
+      task: event.task ? { id: event.task.id, name: event.task.name } : null,
+    }));
+  }
+
+  /**
+   * A CreditEvent query already scoped to one workspace and one window.
+   *
+   * Every aggregate the Usage page renders needs exactly that pair, and each
+   * one used to spell it out itself. Holding it in one place is what stops a
+   * newly added aggregate from quietly reporting over a different window than
+   * the rest of the response it ships in.
+   */
+  private scopedEvents(workspaceId: string, range: DateRange): SelectQueryBuilder<CreditEvent> {
+    return this.creditEventRepository
+      .createQueryBuilder('event')
+      .where('event.workspaceId = :workspaceId', { workspaceId })
+      .andWhere('event.createdAt >= :from', { from: range.from })
+      .andWhere('event.createdAt <= :to', { to: range.to });
+  }
+
+  /** Credits/tokens per day over the window — the analytics chart. */
   async dailyUsage(
     workspaceId: string,
-    days = 30,
+    range: DateRange,
   ): Promise<Array<{ day: string; credits: number; tokens: number; events: number }>> {
-    const rows = await this.creditEventRepository
-      .createQueryBuilder('event')
+    const rows = await this.scopedEvents(workspaceId, range)
       .select(`to_char(event.createdAt, 'YYYY-MM-DD')`, 'day')
       .addSelect('SUM(event.creditsUsed)', 'credits')
       .addSelect('SUM(event.tokensUsed)', 'tokens')
       .addSelect('COUNT(event.id)', 'events')
-      .where('event.workspaceId = :workspaceId', { workspaceId })
-      .andWhere(`event.createdAt >= now() - make_interval(days => :days)`, { days })
       .groupBy('day')
       .orderBy('day', 'ASC')
       .getRawMany<{ day: string; credits: string; tokens: string; events: string }>();
@@ -281,16 +371,13 @@ export class UsageService {
   /** The workspace's heaviest credit spenders over the trailing window. */
   async topSpenders(
     workspaceId: string,
-    days = 30,
+    range: DateRange,
     limit = 10,
   ): Promise<Array<{ userId: string | null; credits: number; events: number }>> {
-    const rows = await this.creditEventRepository
-      .createQueryBuilder('event')
+    const rows = await this.scopedEvents(workspaceId, range)
       .select('event.userId', 'userId')
       .addSelect('SUM(event.creditsUsed)', 'credits')
       .addSelect('COUNT(event.id)', 'events')
-      .where('event.workspaceId = :workspaceId', { workspaceId })
-      .andWhere(`event.createdAt >= now() - make_interval(days => :days)`, { days })
       .groupBy('event.userId')
       .orderBy('credits', 'DESC')
       .limit(limit)
@@ -314,16 +401,14 @@ export class UsageService {
    * were really spent — and is named as removed rather than dropped, so the
    * per-task figures still add up to the total.
    */
-  async topTasks(workspaceId: string, days = 30, limit = 10) {
-    const rows = await this.creditEventRepository
-      .createQueryBuilder('event')
+  async topTasks(workspaceId: string, range: DateRange, limit = 10) {
+    const rows = await this.scopedEvents(workspaceId, range)
       .select('event.taskId', 'taskId')
       .addSelect('SUM(event.creditsUsed)', 'credits')
       .addSelect('COUNT(event.id)', 'runs')
       .addSelect('MAX(event.createdAt)', 'lastRun')
       .where('event.workspaceId = :workspaceId', { workspaceId })
       .andWhere('event.taskId IS NOT NULL')
-      .andWhere(`event.createdAt >= now() - make_interval(days => :days)`, { days })
       .groupBy('event.taskId')
       .orderBy('credits', 'DESC')
       .limit(limit)
@@ -358,15 +443,12 @@ export class UsageService {
    */
   async dailyUsageSplit(
     workspaceId: string,
-    days = 30,
+    range: DateRange,
   ): Promise<Array<{ day: string; thread: number; scheduledTask: number; credits: number }>> {
-    const rows = await this.creditEventRepository
-      .createQueryBuilder('event')
+    const rows = await this.scopedEvents(workspaceId, range)
       .select(`to_char(date_trunc('day', event.createdAt), 'YYYY-MM-DD')`, 'day')
       .addSelect('event.type', 'type')
       .addSelect('SUM(event.creditsUsed)', 'credits')
-      .where('event.workspaceId = :workspaceId', { workspaceId })
-      .andWhere(`event.createdAt >= now() - make_interval(days => :days)`, { days })
       .groupBy('day')
       .addGroupBy('event.type')
       .orderBy('day', 'ASC')
@@ -393,14 +475,11 @@ export class UsageService {
    */
   async creditsByType(
     workspaceId: string,
-    days = 30,
+    range: DateRange,
   ): Promise<{ thread: number; scheduledTask: number }> {
-    const rows = await this.creditEventRepository
-      .createQueryBuilder('event')
+    const rows = await this.scopedEvents(workspaceId, range)
       .select('event.type', 'type')
       .addSelect('SUM(event.creditsUsed)', 'credits')
-      .where('event.workspaceId = :workspaceId', { workspaceId })
-      .andWhere(`event.createdAt >= now() - make_interval(days => :days)`, { days })
       .groupBy('event.type')
       .getRawMany<{ type: string; credits: string }>();
     const creditsFor = (type: CreditEventType): number =>
@@ -423,28 +502,32 @@ export class UsageService {
    * should be folded together, but admin's is left alone here so this addition
    * cannot change a page that already works.
    */
-  async analyticsForWorkspace(workspaceId: string, days = 30) {
+  async analyticsForWorkspace(workspaceId: string, range: DateRange) {
     const [daily, spenders, members, byType, topTasks] = await Promise.all([
-      this.dailyUsageSplit(workspaceId, days),
-      this.topSpenders(workspaceId, days),
+      this.dailyUsageSplit(workspaceId, range),
+      this.topSpenders(workspaceId, range),
       this.usersService.listAllByWorkspace(workspaceId),
-      this.creditsByType(workspaceId, days),
-      this.topTasks(workspaceId, days),
+      this.creditsByType(workspaceId, range),
+      this.topTasks(workspaceId, range),
     ]);
     const totalCredits = daily.reduce((sum, row) => sum + row.credits, 0);
-    const series = zeroFilledDays(daily, days);
+    const series = zeroFilledDays(daily, range);
     const nameById = new Map(
       members.map((member) => [member.id, member.name ?? member.email ?? member.id]),
     );
     const avatarById = new Map(members.map((member) => [member.id, member.avatarUrl]));
     return {
-      days,
+      // Echoed back so the caller can label the chart with the window it
+      // actually got, rather than the one it believes it asked for.
+      range: { from: range.from.toISOString(), to: range.to.toISOString() },
+      days: series.length,
       daily: series,
       totalCredits,
       // Burn is over the whole window, not just the days that saw traffic — a
       // quiet weekend is part of the rate, and averaging only active days would
-      // overstate it.
-      burnPerDay: days > 0 ? Math.round(totalCredits / days) : 0,
+      // overstate it. Series length is the day count, so an empty range cannot
+      // divide by zero here.
+      burnPerDay: series.length > 0 ? Math.round(totalCredits / series.length) : 0,
       byType,
       topTasks: topTasks.map((task) => ({
         ...task,
@@ -487,7 +570,7 @@ export class UsageService {
    */
   async costSummary(
     workspaceId: string,
-    days = 30,
+    range: DateRange,
   ): Promise<{
     costUsd: number;
     chargedUsd: number;
@@ -495,8 +578,7 @@ export class UsageService {
     tokens: { input: number; output: number; cacheWrite: number; cacheRead: number };
     events: number;
   }> {
-    const row = await this.creditEventRepository
-      .createQueryBuilder('event')
+    const row = await this.scopedEvents(workspaceId, range)
       .select('COALESCE(SUM(event.providerCostUsd), 0)', 'cost')
       .addSelect('COALESCE(SUM(event.creditsUsed), 0)', 'credits')
       .addSelect('COALESCE(SUM(event.inputTokens), 0)', 'input')
@@ -504,8 +586,6 @@ export class UsageService {
       .addSelect('COALESCE(SUM(event.cacheWriteTokens), 0)', 'cacheWrite')
       .addSelect('COALESCE(SUM(event.cacheReadTokens), 0)', 'cacheRead')
       .addSelect('COUNT(event.id)', 'events')
-      .where('event.workspaceId = :workspaceId', { workspaceId })
-      .andWhere(`event.createdAt >= now() - make_interval(days => :days)`, { days })
       .getRawOne<Record<string, string>>();
 
     const costUsd = Number(row?.cost ?? 0);
