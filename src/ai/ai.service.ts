@@ -1,5 +1,7 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import Redis from 'ioredis';
+import { REDIS_CLIENT } from '../common/constants';
 import { AppConfig } from '../config/configuration';
 import { PERSONALITY_INSTRUCTIONS } from './personality';
 import { AnthropicProvider } from './providers/anthropic.provider';
@@ -92,6 +94,20 @@ import { GET_WORKSPACE_STATS, WORKSPACE_TOOLS } from './workspace-tools';
 
 /** Balance (in credits; 1 credit = $0.01) under which replies carry a top-up nudge. */
 const LOW_BALANCE_CREDITS = 1000;
+
+/**
+ * How long one low-balance nudge suppresses the next in the same conversation.
+ *
+ * The nudge used to ride on every reply once under the threshold, so a thread
+ * that crossed it wore a top-up banner — and, in Slack, an unfurled link card —
+ * on every turn including one-line acknowledgements. The balance is falling the
+ * whole time, so the nudge is loudest exactly when the user is most likely to be
+ * mid-task. Once a conversation has been told, it has been told.
+ */
+const LOW_BALANCE_NUDGE_TTL_SECONDS = 6 * 60 * 60;
+
+/** Redis key prefix for the per-conversation low-balance nudge throttle. */
+const LOW_BALANCE_PREFIX = 'ai:lowbalance:';
 
 /**
  * Local (custom) tools AiService executes itself: building/updating Spaces and
@@ -203,6 +219,7 @@ export class AiService {
   private readonly logger = new Logger(AiService.name);
 
   constructor(
+    @Inject(REDIS_CLIENT) private readonly redis: Redis,
     private readonly configService: ConfigService<AppConfig, true>,
     private readonly integrationsService: IntegrationsService,
     private readonly pipedream: PipedreamService,
@@ -594,18 +611,27 @@ export class AiService {
         'Meta-only numbers, present both when they differ, and always mention its caveats (blended ' +
         'revenue, currency notes). Past results are queryable with list_roas_snapshots.';
     }
-    // Sheets-export guidance rides along only when the export tools do.
+    // Sheets guidance rides along only when the export tools do. It leads with
+    // the connected app's own actions on purpose: leading with the export tools
+    // read as "Sheets means exports", and the model refused to list or read a
+    // spreadsheet on the grounds that it only had export tools — while holding
+    // the whole Google Sheets action catalogue.
     if (hasSheets) {
       system +=
-        '\n\nGoogle Sheets is connected, so you can export reporting data to a spreadsheet. Use ' +
-        'export_to_sheet for a one-off report and create_scheduled_export for a recurring one ' +
-        '("every Monday put last week\'s numbers in the sheet") — a scheduled export runs on its ' +
-        'own and appends only new rows, so the sheet builds a history. Three datasets are ' +
-        'available: verified ROAS runs, Meta campaign performance, and rule-engine actions. For ' +
-        'anything else in a spreadsheet (reading a sheet, arbitrary rows, other data) use the ' +
-        'generic Google Sheets actions instead. Reuse a remembered sheet (e.g. an ' +
-        '"export_sheet_id" fact) instead of creating new spreadsheets each time, remember the ' +
-        'sheet id the first time one is created, and always give the user the spreadsheet link.';
+        '\n\nGoogle Sheets is connected TWO ways and you have both. First, the Google Sheets app ' +
+        'itself, whose ordinary actions do anything a person could do in Sheets — list the ' +
+        'spreadsheets in the account, read a sheet, search, add or update arbitrary rows. Use ' +
+        'those for any normal spreadsheet request; never tell the user you cannot list or read ' +
+        'their spreadsheets, and never send them to connect Google Drive for something the ' +
+        'Sheets app already covers. Second, on top of that, two reporting tools that write ' +
+        "Gomer's own datasets — verified ROAS runs, Meta campaign performance, and rule-engine " +
+        'actions: export_to_sheet for a one-off report and create_scheduled_export for a ' +
+        'recurring one ("every Monday put last week\'s numbers in the sheet"), which runs on its ' +
+        'own and appends only new rows so the sheet builds a history. Those two are ONLY for ' +
+        "those three datasets; everything else goes through the app's own actions. Reuse a " +
+        'remembered sheet (e.g. an "export_sheet_id" fact) instead of creating new spreadsheets ' +
+        'each time, remember the sheet id the first time one is created, and always give the ' +
+        'user the spreadsheet link.';
     }
     // Rule-engine guidance rides along with a Meta connection.
     if (hasMeta) {
@@ -813,8 +839,14 @@ export class AiService {
     });
 
     // Low-balance nudge: piggybacks on the answer once the workspace is under
-    // $10 of credits, so the user hears about it before the hard stop above.
-    if (answer.trim() && creditBalance.balance < LOW_BALANCE_CREDITS) {
+    // $10 of credits, so the user hears about it before the hard stop above —
+    // but at most once per conversation per window, so it stays a warning rather
+    // than a footer on every reply.
+    if (
+      answer.trim() &&
+      creditBalance.balance < LOW_BALANCE_CREDITS &&
+      (await this.shouldNudgeLowBalance(workspaceId, options.conversationId ?? null))
+    ) {
       answer +=
         `\n\n_Heads up: this workspace has about $${(creditBalance.balance / 100).toFixed(2)} ` +
         `of credits left. Top up at <${billingUrl}|${billingUrl}>._`;
@@ -827,6 +859,35 @@ export class AiService {
       spaces,
       pendingAction: pending.current,
     };
+  }
+
+  /**
+   * Whether this run should carry the low-balance nudge, claiming the slot if so.
+   *
+   * Keyed per conversation, so each thread hears it once and a scheduled task
+   * (which has no conversation) is throttled per workspace instead of nudging on
+   * every unattended run. SET NX makes the check and the claim one operation, so
+   * two turns landing together cannot both take it.
+   *
+   * Fails open: if Redis is unreachable the nudge shows. A user who sees it twice
+   * is mildly annoyed; a user who never sees it hits the hard stop unwarned.
+   */
+  private async shouldNudgeLowBalance(
+    workspaceId: string,
+    conversationId: string | null,
+  ): Promise<boolean> {
+    const key = `${LOW_BALANCE_PREFIX}${workspaceId}:${conversationId ?? 'workspace'}`;
+    try {
+      const claimed = await this.redis.set(key, '1', 'EX', LOW_BALANCE_NUDGE_TTL_SECONDS, 'NX');
+      return claimed === 'OK';
+    } catch (error) {
+      this.logger.warn(
+        `Could not throttle the low-balance nudge: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return true;
+    }
   }
 
   /**

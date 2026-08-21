@@ -17,6 +17,14 @@ export const GET_WORKSPACE_STATS_TOOL: ToolSpec = {
     'and every connected app account with who connected it and its label. Use this for questions like ' +
     '"how many members are in this workspace?", "who has connected what?", or "how many people have ' +
     'attached their Slack?". This reads workspace data directly; it is not a connected-app integration.\n' +
+    'ALSO use this to RE-CHECK which apps are connected, reading them live rather than from the list ' +
+    'in your instructions. That list was assembled at the start of the turn, so call this whenever the ' +
+    'user says they have just connected something ("check now", "I connected it", "it IS connected", ' +
+    '"try again"), whenever you are about to tell someone an app is not connected, and whenever the ' +
+    'user contradicts you about what is connected. Check before you deny: saying an app is missing ' +
+    'when it is there sends the user off to connect something they already have. If this comes back ' +
+    'showing the app, use it and simply proceed — do not apologise for a mistake you did not make. ' +
+    'If it comes back genuinely missing, say so plainly and name what to connect.\n' +
     'Present the result clearly: a short member summary first (total, signed up, not signed up), then the ' +
     'connected accounts grouped or tabulated by person → app → label (use a Slack code block for alignment ' +
     'when there are several). Flag any account where active is false as needing attention, note when total ' +
