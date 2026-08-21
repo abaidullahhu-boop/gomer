@@ -104,6 +104,17 @@ export class BillingService {
       'metadata[workspaceId]': workspaceId,
       'metadata[packId]': pack.id,
       'metadata[credits]': String(pack.credits),
+      // Managed Payments — Stripe acting as merchant of record — is on by
+      // default for accounts created from mid-2026, and it rejects any
+      // line item whose product carries no tax code. We build prices inline
+      // with price_data and have no product catalogue to hang a tax code on,
+      // so every session 400s with "the product tax code is missing".
+      //
+      // Opting out per session keeps this working regardless of the account's
+      // default, which a dashboard toggle could otherwise change under us.
+      // Adopting Managed Payments later is a tax decision, not a code one: it
+      // needs a real tax code per pack and changes who remits VAT.
+      'managed_payments[enabled]': 'false',
     });
     if (userId) form.set('metadata[userId]', userId);
 
