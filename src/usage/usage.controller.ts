@@ -1,15 +1,67 @@
-import { Controller, Get, Query } from '@nestjs/common';
+import { BadRequestException, Controller, Get, Query } from '@nestjs/common';
 import { CurrentUser } from '../common/decorators';
 import { CreditEvent } from '../database/entities';
-import { CreditBalance, UsageService, UsageSummary } from './usage.service';
+import {
+  ActivityEntry,
+  CreditBalance,
+  DateRange,
+  UsageService,
+  UsageSummary,
+} from './usage.service';
 import { ApiTags } from '@nestjs/swagger';
+
+/**
+ * The widest window a single request may ask for. A range is one grouped scan
+ * of credit_events, so an unbounded span is a table scan a client can trigger
+ * at will; a year is longer than any period the dropdown offers.
+ */
+const MAX_RANGE_DAYS = 366;
+
+/** Fallback span when a caller sends no range at all. */
+const DEFAULT_RANGE_DAYS = 30;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Resolve the `from`/`to` query pair into a window to report over.
+ *
+ * The caller sends absolute instants because it is the only side that knows
+ * the viewer's timezone — "this month" starts at a different moment in Karachi
+ * than in London, and the Workspace entity has no timezone to consult. The
+ * server's job is only to check that what arrived is a sane window.
+ */
+function parseRange(from?: string, to?: string): DateRange {
+  if (!from && !to) {
+    const now = new Date();
+    return { from: new Date(now.getTime() - DEFAULT_RANGE_DAYS * DAY_MS), to: now };
+  }
+  if (!from || !to) {
+    throw new BadRequestException('from and to must be supplied together');
+  }
+
+  const parsedFrom = new Date(from);
+  const parsedTo = new Date(to);
+  // An unparseable date yields Invalid Date rather than throwing, and every
+  // comparison against it is false — so it would slip through a naive
+  // from <= to check and reach the query as NaN.
+  if (Number.isNaN(parsedFrom.getTime()) || Number.isNaN(parsedTo.getTime())) {
+    throw new BadRequestException('from and to must be ISO-8601 dates');
+  }
+  if (parsedFrom.getTime() > parsedTo.getTime()) {
+    throw new BadRequestException('from must not be after to');
+  }
+  if (parsedTo.getTime() - parsedFrom.getTime() > MAX_RANGE_DAYS * DAY_MS) {
+    throw new BadRequestException(`range must not exceed ${MAX_RANGE_DAYS} days`);
+  }
+  return { from: parsedFrom, to: parsedTo };
+}
 
 @ApiTags('usage')
 @Controller('usage')
 export class UsageController {
   constructor(private readonly usageService: UsageService) {}
 
-  /** Aggregate usage totals for the current workspace. */
+  /** Aggregate usage totals for the current workspace, all time. */
   @Get('summary')
   summary(@CurrentUser('workspaceId') workspaceId: string): Promise<UsageSummary> {
     return this.usageService.summarizeForWorkspace(workspaceId);
@@ -21,11 +73,19 @@ export class UsageController {
     return this.usageService.getBalance(workspaceId);
   }
 
-  /** What the workspace's runs cost us vs what it was charged — the margin view. */
+  /**
+   * What the workspace's runs cost us vs what it was charged — the margin view.
+   *
+   * Internal: this is our economics, not the customer's. It is deliberately not
+   * surfaced on the Usage page.
+   */
   @Get('cost')
-  cost(@CurrentUser('workspaceId') workspaceId: string, @Query('days') days?: string) {
-    const window = Math.min(Math.max(Number(days) || 30, 1), 365);
-    return this.usageService.costSummary(workspaceId, window);
+  cost(
+    @CurrentUser('workspaceId') workspaceId: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.usageService.costSummary(workspaceId, parseRange(from, to));
   }
 
   /**
@@ -37,12 +97,33 @@ export class UsageController {
    * caller already belongs to.
    */
   @Get('analytics')
-  analytics(@CurrentUser('workspaceId') workspaceId: string, @Query('days') days?: string) {
-    const window = Math.min(Math.max(Number(days) || 30, 1), 365);
-    return this.usageService.analyticsForWorkspace(workspaceId, window);
+  analytics(
+    @CurrentUser('workspaceId') workspaceId: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
+  ) {
+    return this.usageService.analyticsForWorkspace(workspaceId, parseRange(from, to));
   }
 
-  /** Recent credit events for the current workspace. */
+  /**
+   * The activity feed: recent spend with each row's user and task resolved.
+   *
+   * `taskId` narrows to one scheduled task, which is what the Scheduled Tasks
+   * table deep-links into.
+   */
+  @Get('activity')
+  activity(
+    @CurrentUser('workspaceId') workspaceId: string,
+    @Query('taskId') taskId?: string,
+    @Query('limit') limit?: string,
+  ): Promise<ActivityEntry[]> {
+    return this.usageService.recentActivity(workspaceId, {
+      ...(taskId ? { taskId } : {}),
+      ...(limit ? { limit: Number(limit) || undefined } : {}),
+    });
+  }
+
+  /** Raw recent credit events. Superseded by /usage/activity for display. */
   @Get('events')
   events(@CurrentUser('workspaceId') workspaceId: string): Promise<CreditEvent[]> {
     return this.usageService.findRecentForWorkspace(workspaceId);
