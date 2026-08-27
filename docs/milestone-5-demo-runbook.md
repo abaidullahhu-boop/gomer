@@ -17,6 +17,36 @@ Everything below runs against **production**
 
 ---
 
+## What production actually holds
+
+Measured 2026-08-27 against the prod database. Unlike Milestone 4, every surface
+here has real data behind it.
+
+| Fact | State |
+|---|---|
+| Workspace / users | 1 workspace; 1 admin + 3 members, all active |
+| Credits granted | 12,500 (a $100 `onboarding` grant + one $25 `topup`) |
+| Credits used | 11,630 across 70 real events |
+| **Current balance** | **870 credits — $8.70** |
+| Stripe billing mode | **TEST** — `STRIPE_SECRET_KEY` is not a live key, and the webhook secret is set |
+
+The balance being under $10 is worth planning around rather than fixing: it puts
+the workspace **below the `LOW_BALANCE_CREDITS = 1000` threshold right now**, so
+Step 2's preferred demo works live with no staging at all.
+
+### Record Milestone 5 before Milestone 4
+
+$8.70 is not much runway. The M4 script is eight Slack messages, each a model
+call billed against this same ledger, and if it drains to zero mid-take you get
+the hard stop on camera in the wrong video. So:
+
+1. Record M5 through the low-balance nudge (Step 2) while the balance is low —
+   that is the shot, and it exists for free today.
+2. Do the top-up on camera (Step 1). It refills the ledger.
+3. Record M4 afterwards, funded by that top-up.
+
+---
+
 ## Step 0 — Deploy first (do not skip)
 
 This branch changes **authentication**. The JWT strategy now rejects tokens that
@@ -64,11 +94,15 @@ Dashboard → **Billing**.
 Click **Scale — $100** → Stripe Checkout opens → pay with `4242 4242 4242 4242`,
 any future expiry, any CVC.
 
-You land back on `/dashboard/billing?topup=success`. **The balance does not jump
-immediately** — it moves when Stripe's webhook arrives, usually a second or two
-later. Refresh once. Explaining that out loud is better than looking surprised:
-the credit is granted by the *verified webhook*, not by the browser redirect, so
-nobody can mint credits by hand-crafting a success URL.
+You land back on `/dashboard/billing?topup=success`, and the page refetches the
+balance by itself on the way in — so it usually shows the new figure with no
+input from you. If the webhook is still in flight at that moment the old balance
+lingers; refresh once and it lands.
+
+Either way, **say why out loud**: the credit is granted by the *verified
+webhook*, not by the browser redirect, so nobody can mint credits by
+hand-crafting a success URL. The delay, when you see it, is the security
+property working rather than a lag worth apologising for.
 
 > **Use test mode.** Confirm the dashboard's Stripe keys are test keys before
 > filming, or that $100 is real money.
@@ -87,7 +121,14 @@ Two ways to show it, in order of preference:
 
 1. **Low-balance nudge** — on a workspace under $10 of credits, Gomer appends a
    "heads up, about $X left" line to its normal answer. Show a normal question
-   getting a normal answer *plus* the nudge.
+   getting a normal answer *plus* the nudge. **This is live right now** at $8.70;
+   nothing needs staging.
+
+   > **Use a brand-new thread, and don't rehearse it in the thread you film.**
+   > The nudge claims a Redis slot keyed per conversation for six hours
+   > (`LOW_BALANCE_NUDGE_TTL_SECONDS`), so it fires *once* per thread. A thread
+   > you tested in will answer normally with no nudge, and you will think the
+   > feature is broken. A fresh thread is a fresh key.
 2. **Hard stop** — on a workspace at zero, Gomer declines and links the billing
    page instead of calling a model at all.
 
