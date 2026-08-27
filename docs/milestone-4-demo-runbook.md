@@ -16,6 +16,44 @@ Everything below runs against **production**
 
 ---
 
+## What production actually holds
+
+Measured 2026-08-27 with `npm run probe:roas` and a direct read of the prod
+database. This decides what can be filmed and what cannot, so read it first.
+
+| Fact | State |
+|---|---|
+| Meta token scopes | `ads_management`, `ads_read`, `business_management` — all granted |
+| Meta ad accounts | `act_1471210033594550` (0 campaigns), `act_1709976226241899` KIVOVA (3 campaigns, **all PAUSED**) |
+| Meta spend, trailing 365 days | **0.00** on both accounts — no insight rows at all |
+| Stripe connection | **none** |
+| `roas_snapshots` / `ad_rules` / `ad_rule_actions` | 0 / 0 / 0 |
+| `scheduled_exports` / `workspace_memory` / `anomaly_alerts` | 0 / 0 / 0 |
+| Google Sheets proxy | **working** — `apn_AVhXbQO` (team); Google answers 404 to a fake id, so the proxy forwards authenticated |
+
+Two consequences:
+
+- **Verified ROAS cannot be demonstrated.** `RoasService.verify` throws
+  `No active Stripe connection is available.` before computing anything, and
+  even with Stripe connected, Meta contributes spend 0. Do not send the ROAS
+  question on camera — it returns an error, not a number.
+- **Exports will write headers and zero data rows.** Both `roas_snapshots` and
+  `campaign_insights` are empty for this workspace, and paused campaigns with no
+  delivered spend produce no insights. The export *mechanism* is fully
+  demonstrable; the data is not. Say so plainly rather than letting the client
+  notice an empty sheet.
+
+What is still real and live on camera: the memory write, the rule engine with
+its confirmation gate, the scheduled export being created, run, and listed, and
+the Automations page reflecting all of it afterwards.
+
+> **Record Milestone 5 first.** The workspace balance is $8.70, and the eight
+> messages below are eight model calls billed against it. Milestone 5's top-up
+> beat refills the ledger, so filming M5 first both captures its low-balance
+> nudge while it is genuinely low and funds this recording. See the M5 runbook.
+
+---
+
 ## Step 0 — Deploy first (do not skip)
 
 The Sheets export is new code **and a new table**. The schema migration
@@ -51,8 +89,10 @@ Dashboard → **Integrations** → search **Google Sheets** → **Connect**.
 the first write with `Request had insufficient authentication scopes`. If that
 happens, revoke at myaccount.google.com/permissions and reconnect.
 
-Meta Ads and Stripe should already be connected from the Milestone 3 demo. The
-campaign-performance export needs Meta; the verified-ROAS export needs both.
+Meta Ads is connected in production. **Stripe is not** — verified as of
+2026-08-27, there is no `stripe` row in the production `integrations` table at
+all. The campaign-performance export needs Meta; the verified-ROAS export needs
+both. See "What production actually holds" below before you plan the take.
 
 ### Verify the proxy before you record — this one is a hard gate
 
@@ -85,13 +125,18 @@ Send these one at a time, waiting for each reply:
 | # | Message | What it proves |
 |---|---|---|
 | 1 | `our target ROAS is 3` | **Memory write.** Saved silently as a durable fact — no "I've noted that" theatre. |
-| 2 | `what's our real ROAS for the last 7 days?` | **Stripe verification.** Meta spend paired with actual Stripe revenue, compared against the target from message 1, with the blended-revenue caveat stated. |
-| 3 | `export our verified ROAS history to a spreadsheet` | **The headline.** Creates the sheet, writes headers + rows, returns a link. Open it on camera. |
+| 2 | `what do you remember about us?` | Reads the fact back, proving it persisted rather than living in the thread. |
+| 3 | `export last week's campaign performance to a spreadsheet` | **The headline.** Creates the sheet, writes the header contract, returns a link. Open it on camera — and say up front that the connected ad account has no delivered spend, so the rows are empty by construction, not by failure. |
 | 4 | `every Monday at 8am put last week's campaign performance in that same sheet` | Recurring export created. Gomer should confirm the terms first and reuse the spreadsheet from message 3 rather than making a second one. |
-| 5 | `run that export now` | Runs it off-schedule so the new tab appears live instead of waiting until Monday. |
+| 5 | `run that export now` | Runs it off-schedule so the write happens live instead of waiting until Monday. |
 | 6 | `what reports are running?` | Lists the schedule, destination, last run, and row count. |
 | 7 | `every night at 2am pause any campaign whose CPA over the last 3 days is above 40` | **Rule engine.** Gomer states metric/threshold/window/action/schedule/guardrails and asks for confirmation. |
 | 8 | `yes` | Rule created. |
+
+> **Do not send a verified-ROAS question.** `what's our real ROAS…` throws
+> `No active Stripe connection is available.` in production today. The
+> Stripe-verification deliverable is covered in Step 5 instead, as code and
+> schema rather than a live answer.
 
 ### Two things to avoid on camera
 
@@ -105,18 +150,28 @@ Send these one at a time, waiting for each reply:
 
 ## Step 3 — Show the spreadsheet
 
-Open the link from message 3. Two tabs, each with its own header row:
+Open the link from message 3. The **Campaign Performance** tab carries its
+header row: Exported At, window, Campaign, Spend, Impressions, Clicks, CTR, CPC,
+Purchases, CPA, Meta ROAS.
 
-- **Verified ROAS** — Verified At, Ad Account, window, Meta Spend, Stripe
-  Revenue, Verified ROAS, Purchases, Verified CPA, Caveats.
-- **Campaign Performance** — Exported At, window, Campaign, Spend, Impressions,
-  Clicks, CTR, CPC, Purchases, CPA, Meta ROAS.
+**Set expectations before you scroll.** The connected ad account's three
+campaigns are all paused and have never delivered, so Meta returns no insight
+rows and the tab is headers only. That is the documented contract, not a
+failure — `export-tables.spec.ts` pins "an empty dataset still carries its header
+contract" precisely so a quiet window produces a valid sheet instead of a broken
+one. Show the row count Gomer reports back (0) and the `lastRowCount` column in
+Step 4; the honest version of this beat is stronger than a surprised one.
 
-Numbers land as numbers, not text, so they sort and chart in Sheets directly.
+Two points worth making out loud regardless:
 
-The point worth making out loud: **run it again and it appends, it doesn't
-duplicate.** Each scheduled run resumes from the newest row it already wrote, so
-the sheet accumulates a history instead of repeating one.
+- **Numbers land as numbers, not text**, so once rows exist they sort and chart
+  in Sheets directly.
+- **Run it again and it appends, it doesn't duplicate.** Each scheduled run
+  resumes from the newest row it already wrote, so the sheet accumulates a
+  history instead of repeating one.
+
+If the client wants to see populated rows, that needs an ad account with
+delivered spend — see Step 5.
 
 ---
 
@@ -138,8 +193,35 @@ SELECT name, dataset, "cronExpression", "spreadsheetId",
 FROM scheduled_exports ORDER BY "createdAt" DESC LIMIT 5;
 ```
 
-`lastError` NULL and `lastRowCount` > 0 is a healthy run. (Prod DB access goes
-through the DO app console — there is no external route to `gomer-db`.)
+`lastError` NULL is a healthy run. `lastRowCount` will be **0** for this
+workspace — see Step 3; a non-zero count only appears once an ad account with
+delivered spend is connected. (Prod DB access goes through the DO app console —
+there is no external route to `gomer-db`.)
+
+---
+
+## Step 5 — Stripe ROAS verification, without a live number
+
+This deliverable is built and tested but cannot be run on camera today: there is
+no Stripe connection in production, and the connected Meta accounts have never
+spent. Cover it honestly rather than skipping it.
+
+Walk the client through the mechanism:
+
+- `RoasService.verify` pairs Meta account-level spend with **actual Stripe
+  charge revenue**, net of refunds, over the same window — the check on Meta's
+  self-attributed conversions.
+- It refuses to compute across currencies, and always attaches the caveat that
+  revenue is *all* Stripe revenue in the window, not only ad-attributed
+  purchases — so the client is told it is blended ROAS, not a precise
+  attribution claim.
+- Every verification persists a `roas_snapshots` row, which is what makes the
+  history queryable and exportable.
+
+Then state the gap plainly: **to produce a real verified ROAS the client needs to
+connect Stripe and supply an ad account with delivered spend.** Both are theirs
+to provide; neither is a code change. `npm run probe:roas` reports exactly what
+each side is missing and is the fastest way to confirm once they do.
 
 ---
 
@@ -153,6 +235,8 @@ through the DO app console — there is no external route to `gomer-db`.)
 | Export tools missing entirely | Deploy didn't land | Check the deployed commit; re-record after it does |
 | Second spreadsheet created on message 4 | Sheet id wasn't remembered | Name the spreadsheet id explicitly, or ask Gomer to remember it first |
 | Rule confirmation never appears | Meta connection missing/expired | Reconnect Meta |
+| `No active Stripe connection is available.` | You asked a verified-ROAS question | Expected in production — Stripe is not connected. Do not send that question; cover it via Step 5 |
+| Export sheet has headers but no rows | Ad account has no delivered spend | Expected — see Step 3. Not a failure; state it before opening the sheet |
 
 ---
 
