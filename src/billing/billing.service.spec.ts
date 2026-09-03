@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { AppConfig } from '../config/configuration';
 import { UsageService } from '../usage/usage.service';
-import { BillingService } from './billing.service';
+import { BillingService, subscriptionIdFromInvoice } from './billing.service';
 import { SubscriptionsService } from './subscriptions.service';
 
 const WEBHOOK_SECRET = 'whsec_test';
@@ -143,4 +143,33 @@ test('ignores event types it has no handler for', async () => {
     received: true,
   });
   assert.equal(usage.granted.length, 0);
+});
+
+test('reads the subscription from an invoice on either Stripe API version', () => {
+  // Pre-2025-03-31 shape.
+  assert.equal(subscriptionIdFromInvoice({ id: 'in_1', subscription: 'sub_legacy' }), 'sub_legacy');
+
+  // The shape Stripe moved to, which a newer webhook endpoint receives.
+  assert.equal(
+    subscriptionIdFromInvoice({
+      id: 'in_2',
+      parent: { subscription_details: { subscription: 'sub_modern' } },
+    }),
+    'sub_modern',
+  );
+
+  // Expanded rather than an id, on either shape.
+  assert.equal(
+    subscriptionIdFromInvoice({ id: 'in_3', subscription: { id: 'sub_expanded' } }),
+    'sub_expanded',
+  );
+});
+
+test('treats an invoice with no subscription as not ours, rather than crashing', () => {
+  assert.equal(subscriptionIdFromInvoice({ id: 'in_4' }), null);
+  assert.equal(subscriptionIdFromInvoice({ id: 'in_5', subscription: null }), null);
+  assert.equal(
+    subscriptionIdFromInvoice({ id: 'in_6', parent: { subscription_details: null } }),
+    null,
+  );
 });

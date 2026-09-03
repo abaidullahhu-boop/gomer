@@ -31,13 +31,39 @@ const WEBHOOK_TOLERANCE_SECONDS = 5 * 60;
  */
 const RENEWAL_REASONS = ['subscription_create', 'subscription_cycle'];
 
+/** A field Stripe returns either as an id or, when expanded, as an object. */
+type StripeRef = string | { id?: string } | null | undefined;
+
 /** The fields we read off a Stripe invoice. */
 interface StripeInvoiceShape {
   id: string;
-  subscription?: string | null;
+  /** Where the subscription lives on API versions before 2025-03-31. */
+  subscription?: StripeRef;
+  /** Where it moved to afterwards. */
+  parent?: { subscription_details?: { subscription?: StripeRef } | null } | null;
   billing_reason?: string;
   /** The invoice's first line carries the period it paid for. */
   lines?: { data?: Array<{ period?: { start: number; end: number } }> };
+}
+
+/** Unwrap an id that may have arrived expanded into a full object. */
+function refId(ref: StripeRef): string | null {
+  if (typeof ref === 'string') return ref || null;
+  return typeof ref?.id === 'string' && ref.id ? ref.id : null;
+}
+
+/**
+ * The subscription an invoice belongs to, read from either place Stripe puts it.
+ *
+ * Stripe API versions from 2025-03-31 moved this off the invoice and under
+ * `parent.subscription_details`. A webhook endpoint pins its own version, so
+ * which shape arrives depends on when the endpoint was created — and the
+ * platform's account and a client's can easily differ. Reading both costs
+ * nothing; reading one silently ignores every renewal on the other, which is
+ * the worst failure this file can have.
+ */
+export function subscriptionIdFromInvoice(invoice: StripeInvoiceShape): string | null {
+  return refId(invoice.subscription) ?? refId(invoice.parent?.subscription_details?.subscription);
 }
 
 export { CREDIT_PACKS, SUBSCRIPTION_PLANS };
@@ -293,17 +319,26 @@ export class BillingService {
    * not mint a new allowance.
    */
   private async onInvoicePaid(invoice: StripeInvoiceShape | undefined) {
-    if (!invoice?.id || !invoice.subscription) return { received: true };
+    if (!invoice?.id) return { received: true };
     if (invoice.billing_reason && !RENEWAL_REASONS.includes(invoice.billing_reason)) {
       return { received: true };
     }
 
-    const subscription = await this.subscriptionsService.findByStripeId(invoice.subscription);
+    const stripeSubscriptionId = subscriptionIdFromInvoice(invoice);
+    if (!stripeSubscriptionId) {
+      // A one-off invoice carries no subscription and is genuinely not ours to
+      // act on. Logged all the same: if this ever fires for a renewal, it means
+      // Stripe moved the field again and every allowance is being dropped.
+      this.logger.log(`invoice.paid ${invoice.id} carries no subscription; ignored`);
+      return { received: true };
+    }
+
+    const subscription = await this.subscriptionsService.findByStripeId(stripeSubscriptionId);
     if (!subscription) {
       // The subscription webhook has not landed yet. Stripe retries a 5xx, and
       // by the next delivery `customer.subscription.created` will have created
       // the row — so fail loudly rather than silently dropping the allowance.
-      this.logger.warn(`invoice.paid for unknown subscription ${invoice.subscription}; retrying`);
+      this.logger.warn(`invoice.paid for unknown subscription ${stripeSubscriptionId}; retrying`);
       throw new ServiceUnavailableException('Subscription not yet synced');
     }
 
