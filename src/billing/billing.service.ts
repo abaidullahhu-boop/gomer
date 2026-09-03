@@ -8,32 +8,40 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { AppConfig } from '../config/configuration';
-import { CreditGrantReason } from '../common/enums';
+import { CreditGrantReason, SubscriptionStatus } from '../common/enums';
 import { UsageService } from '../usage/usage.service';
+import {
+  CREDIT_PACKS,
+  CreditPack,
+  SUBSCRIPTION_PLANS,
+  SubscriptionPlan,
+  findPack,
+  findPlan,
+} from './plans';
+import { StripeSubscriptionShape, SubscriptionsService } from './subscriptions.service';
 
 const STRIPE_BASE = 'https://api.stripe.com/v1';
 
 /** How stale a webhook's signed timestamp may be before it is rejected. */
 const WEBHOOK_TOLERANCE_SECONDS = 5 * 60;
 
-/** A purchasable credit bundle. 1 credit = $0.01, so credits = cents paid. */
-export interface CreditPack {
+/**
+ * Invoice reasons that mean "a new period started". Stripe raises invoices for
+ * prorations and manual charges too, and those must not grant an allowance.
+ */
+const RENEWAL_REASONS = ['subscription_create', 'subscription_cycle'];
+
+/** The fields we read off a Stripe invoice. */
+interface StripeInvoiceShape {
   id: string;
-  label: string;
-  amountCents: number;
-  credits: number;
+  subscription?: string | null;
+  billing_reason?: string;
+  /** The invoice's first line carries the period it paid for. */
+  lines?: { data?: Array<{ period?: { start: number; end: number } }> };
 }
 
-/**
- * The packs offered on the billing page. Credits map 1:1 to cents so what the
- * grants ledger records as revenue is exactly what Stripe collected.
- */
-export const CREDIT_PACKS: CreditPack[] = [
-  { id: 'starter', label: 'Starter — $25', amountCents: 2500, credits: 2500 },
-  { id: 'growth', label: 'Growth — $50', amountCents: 5000, credits: 5000 },
-  { id: 'scale', label: 'Scale — $100', amountCents: 10000, credits: 10000 },
-  { id: 'pro', label: 'Pro — $250', amountCents: 25000, credits: 25000 },
-];
+export { CREDIT_PACKS, SUBSCRIPTION_PLANS };
+export type { CreditPack, SubscriptionPlan };
 
 /** Postgres `unique_violation`, raised when a duplicate grant loses the race. */
 function isUniqueViolation(error: unknown): boolean {
@@ -49,6 +57,8 @@ function isUniqueViolation(error: unknown): boolean {
 interface StripeCheckoutSession {
   id: string;
   url?: string | null;
+  /** `payment` for a top-up, `subscription` for a plan. */
+  mode?: string;
   payment_status?: string;
   amount_total?: number | null;
   currency?: string | null;
@@ -68,10 +78,88 @@ export class BillingService {
   constructor(
     private readonly configService: ConfigService<AppConfig, true>,
     private readonly usageService: UsageService,
+    private readonly subscriptionsService: SubscriptionsService,
   ) {}
 
   getPacks(): CreditPack[] {
     return CREDIT_PACKS;
+  }
+
+  getPlans(): SubscriptionPlan[] {
+    return SUBSCRIPTION_PLANS;
+  }
+
+  /** The Stripe secret, or a clear failure when billing was never configured. */
+  private secretKey(): string {
+    const key = this.configService.get('billing', { infer: true }).stripeSecretKey;
+    if (!key) {
+      throw new ServiceUnavailableException('Billing is not configured (set STRIPE_SECRET_KEY)');
+    }
+    return key;
+  }
+
+  /**
+   * Start a recurring subscription checkout.
+   *
+   * Like the top-up flow this builds its price inline rather than referencing a
+   * Stripe Price object, so the plan ladder stays defined in one place —
+   * `plans.ts` — instead of being split between this repo and the Stripe
+   * dashboard, where the two would drift and nobody would notice until a
+   * customer was charged the wrong amount.
+   */
+  async createSubscriptionSession(
+    workspaceId: string,
+    userId: string | null,
+    planId: string,
+  ): Promise<{ checkoutUrl: string }> {
+    const plan = findPlan(planId);
+    if (!plan) throw new BadRequestException(`Unknown plan: ${planId}`);
+
+    const billingPage = `${this.configService.get('app', { infer: true }).frontendUrl}/dashboard/billing`;
+    const form = new URLSearchParams({
+      mode: 'subscription',
+      success_url: `${billingPage}?subscription=success`,
+      cancel_url: `${billingPage}?subscription=cancelled`,
+      'line_items[0][price_data][currency]': 'usd',
+      'line_items[0][price_data][product_data][name]': `Gomer ${plan.label} plan`,
+      'line_items[0][price_data][unit_amount]': String(plan.priceCents),
+      'line_items[0][price_data][recurring][interval]': 'month',
+      'line_items[0][quantity]': '1',
+      'metadata[workspaceId]': workspaceId,
+      'metadata[planId]': plan.id,
+      // Mirrored onto the subscription itself: webhooks for renewals arrive
+      // against the subscription, not the checkout session, and would otherwise
+      // have no way back to the workspace that owns it.
+      'subscription_data[metadata][workspaceId]': workspaceId,
+      'subscription_data[metadata][planId]': plan.id,
+      'managed_payments[enabled]': 'false',
+    });
+    if (userId) form.set('metadata[userId]', userId);
+
+    const body = await this.stripePost<{ url?: string }>('checkout/sessions', form);
+    if (!body.url) {
+      throw new ServiceUnavailableException('Could not start the checkout — try again shortly.');
+    }
+    return { checkoutUrl: body.url };
+  }
+
+  /** POST a form to Stripe, raising a clean 503 on any non-2xx. */
+  private async stripePost<T>(path: string, form: URLSearchParams): Promise<T> {
+    const res = await fetch(`${STRIPE_BASE}/${path}`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${this.secretKey()}`,
+        'content-type': 'application/x-www-form-urlencoded',
+      },
+      body: form.toString(),
+    });
+    const body = (await res.json().catch(() => ({}))) as { error?: { message?: string } } & T;
+    if (!res.ok || body.error) {
+      const message = body.error?.message ?? `Stripe API error (HTTP ${res.status})`;
+      this.logger.warn(`Stripe ${path} failed: ${message}`);
+      throw new ServiceUnavailableException('Could not reach Stripe — try again shortly.');
+    }
+    return body;
   }
 
   /**
@@ -84,13 +172,8 @@ export class BillingService {
     userId: string | null,
     packId: string,
   ): Promise<{ checkoutUrl: string }> {
-    const pack = CREDIT_PACKS.find((p) => p.id === packId);
+    const pack = findPack(packId);
     if (!pack) throw new BadRequestException(`Unknown credit pack: ${packId}`);
-
-    const secretKey = this.configService.get('billing', { infer: true }).stripeSecretKey;
-    if (!secretKey) {
-      throw new ServiceUnavailableException('Billing is not configured (set STRIPE_SECRET_KEY)');
-    }
 
     const billingPage = `${this.configService.get('app', { infer: true }).frontendUrl}/dashboard/billing`;
     const form = new URLSearchParams({
@@ -118,20 +201,8 @@ export class BillingService {
     });
     if (userId) form.set('metadata[userId]', userId);
 
-    const res = await fetch(`${STRIPE_BASE}/checkout/sessions`, {
-      method: 'POST',
-      headers: {
-        authorization: `Bearer ${secretKey}`,
-        'content-type': 'application/x-www-form-urlencoded',
-      },
-      body: form.toString(),
-    });
-    const body = (await res.json().catch(() => ({}))) as {
-      error?: { message?: string };
-    } & StripeCheckoutSession;
-    if (!res.ok || body.error || !body.url) {
-      const message = body.error?.message ?? `Stripe API error (HTTP ${res.status})`;
-      this.logger.warn(`Checkout session creation failed: ${message}`);
+    const body = await this.stripePost<StripeCheckoutSession>('checkout/sessions', form);
+    if (!body.url) {
       throw new ServiceUnavailableException('Could not start the checkout — try again shortly.');
     }
     return { checkoutUrl: body.url };
@@ -149,11 +220,36 @@ export class BillingService {
 
     const event = JSON.parse(rawBody.toString('utf8')) as {
       type?: string;
-      data?: { object?: StripeCheckoutSession };
+      data?: { object?: Record<string, unknown> };
     };
-    if (event.type !== 'checkout.session.completed') return { received: true };
 
-    const session = event.data?.object;
+    switch (event.type) {
+      case 'checkout.session.completed':
+        return this.onCheckoutCompleted(event.data?.object as StripeCheckoutSession | undefined);
+      case 'invoice.paid':
+        return this.onInvoicePaid(event.data?.object as StripeInvoiceShape | undefined);
+      case 'customer.subscription.created':
+      case 'customer.subscription.updated':
+        return this.onSubscriptionChanged(
+          event.data?.object as StripeSubscriptionShape | undefined,
+        );
+      case 'customer.subscription.deleted':
+        return this.onSubscriptionDeleted(
+          event.data?.object as StripeSubscriptionShape | undefined,
+        );
+      default:
+        return { received: true };
+    }
+  }
+
+  /**
+   * A completed checkout. Subscription checkouts are acknowledged and ignored
+   * here: their credits are granted by `invoice.paid`, which is the event that
+   * actually means money arrived, and which also fires for every renewal after
+   * this one. Granting on both would double the first period.
+   */
+  private async onCheckoutCompleted(session: StripeCheckoutSession | undefined) {
+    if (session?.mode === 'subscription') return { received: true };
     const workspaceId = session?.metadata?.workspaceId;
     const credits = Number(session?.metadata?.credits ?? 0);
     if (!session?.id || !workspaceId || !Number.isFinite(credits) || credits <= 0) {
@@ -184,6 +280,70 @@ export class BillingService {
       return { received: true };
     }
     this.logger.log(`Granted ${credits} credits to workspace ${workspaceId} (${session.id})`);
+    return { received: true };
+  }
+
+  /**
+   * A paid invoice — the event that grants a subscription period's credits.
+   *
+   * This fires for the first payment and for every renewal, which is precisely
+   * the set of moments an allowance should land, so both paths run the same
+   * code. `subscription_create` and `subscription_cycle` are the two reasons we
+   * act on; a proration or a one-off invoice line is not a new period and must
+   * not mint a new allowance.
+   */
+  private async onInvoicePaid(invoice: StripeInvoiceShape | undefined) {
+    if (!invoice?.id || !invoice.subscription) return { received: true };
+    if (invoice.billing_reason && !RENEWAL_REASONS.includes(invoice.billing_reason)) {
+      return { received: true };
+    }
+
+    const subscription = await this.subscriptionsService.findByStripeId(invoice.subscription);
+    if (!subscription) {
+      // The subscription webhook has not landed yet. Stripe retries a 5xx, and
+      // by the next delivery `customer.subscription.created` will have created
+      // the row — so fail loudly rather than silently dropping the allowance.
+      this.logger.warn(`invoice.paid for unknown subscription ${invoice.subscription}; retrying`);
+      throw new ServiceUnavailableException('Subscription not yet synced');
+    }
+
+    const periodEnd = invoice.lines?.data?.[0]?.period?.end;
+    const result = await this.subscriptionsService.applyRenewal(
+      subscription,
+      invoice.id,
+      periodEnd ? new Date(periodEnd * 1000) : subscription.currentPeriodEnd,
+    );
+    if (result.applied) {
+      this.logger.log(
+        `Renewed ${subscription.workspaceId}: ${result.planCredits} plan credits, ` +
+          `${result.rolledOver} rolled over, ${result.seatBonus} seat bonus`,
+      );
+    }
+    return { received: true };
+  }
+
+  /** A subscription was created or changed — mirror it locally. */
+  private async onSubscriptionChanged(stripe: StripeSubscriptionShape | undefined) {
+    const workspaceId = stripe?.metadata?.workspaceId;
+    const planId = stripe?.metadata?.planId;
+    if (!stripe?.id || !workspaceId || !planId) {
+      this.logger.warn(`subscription event missing workspace metadata (${stripe?.id})`);
+      return { received: true };
+    }
+    await this.subscriptionsService.syncFromStripe(workspaceId, planId, stripe);
+    return { received: true };
+  }
+
+  /**
+   * A subscription ended. The status changes; the credits do not.
+   *
+   * Credits already granted for the paid period keep their original expiry,
+   * because the customer paid for that period. What stops is the next
+   * allowance — there simply is no further `invoice.paid`.
+   */
+  private async onSubscriptionDeleted(stripe: StripeSubscriptionShape | undefined) {
+    if (!stripe?.id) return { received: true };
+    await this.subscriptionsService.markStatus(stripe.id, SubscriptionStatus.CANCELED);
     return { received: true };
   }
 

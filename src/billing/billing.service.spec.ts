@@ -6,6 +6,7 @@ import { test } from 'node:test';
 import { AppConfig } from '../config/configuration';
 import { UsageService } from '../usage/usage.service';
 import { BillingService } from './billing.service';
+import { SubscriptionsService } from './subscriptions.service';
 
 const WEBHOOK_SECRET = 'whsec_test';
 
@@ -59,9 +60,19 @@ function usageStub(options: { alreadyGranted?: boolean; raceOnInsert?: boolean }
   };
 }
 
+/** A SubscriptionsService stub — the top-up paths never reach it. */
+function subscriptionsStub() {
+  return {
+    findByStripeId: () => Promise.resolve(null),
+    syncFromStripe: () => Promise.resolve({} as never),
+    markStatus: () => Promise.resolve(),
+    applyRenewal: () => Promise.resolve({ applied: false }),
+  } as unknown as SubscriptionsService;
+}
+
 test('credits a workspace on a correctly signed paid session', async () => {
   const usage = usageStub();
-  const service = new BillingService(configStub, usage.service);
+  const service = new BillingService(configStub, usage.service, subscriptionsStub());
   const { raw, header } = signedEvent('cs_test_1');
 
   assert.deepEqual(await service.handleWebhook(raw, header), { received: true });
@@ -71,7 +82,7 @@ test('credits a workspace on a correctly signed paid session', async () => {
 
 test('rejects a forged signature', async () => {
   const usage = usageStub();
-  const service = new BillingService(configStub, usage.service);
+  const service = new BillingService(configStub, usage.service, subscriptionsStub());
   const { raw } = signedEvent('cs_test_2');
   const timestamp = Math.floor(Date.now() / 1000);
 
@@ -84,7 +95,7 @@ test('rejects a forged signature', async () => {
 
 test('rejects a replayed signature outside the freshness window', async () => {
   const usage = usageStub();
-  const service = new BillingService(configStub, usage.service);
+  const service = new BillingService(configStub, usage.service, subscriptionsStub());
   const raw = Buffer.from('{}');
   const stale = Math.floor(Date.now() / 1000) - 60 * 60;
   const signature = createHmac('sha256', WEBHOOK_SECRET)
@@ -100,7 +111,7 @@ test('rejects a replayed signature outside the freshness window', async () => {
 
 test('acks a retry of an already-credited session without double-granting', async () => {
   const usage = usageStub({ alreadyGranted: true });
-  const service = new BillingService(configStub, usage.service);
+  const service = new BillingService(configStub, usage.service, subscriptionsStub());
   const { raw, header } = signedEvent('cs_test_3');
 
   assert.deepEqual(await service.handleWebhook(raw, header), { received: true });
@@ -112,16 +123,16 @@ test('acks — rather than 500s — when a concurrent delivery wins the insert r
   // rejects the loser. Surfacing that as an error would make Stripe retry a
   // payment that is already credited until the delivery fails permanently.
   const usage = usageStub({ raceOnInsert: true });
-  const service = new BillingService(configStub, usage.service);
+  const service = new BillingService(configStub, usage.service, subscriptionsStub());
   const { raw, header } = signedEvent('cs_test_4');
 
   assert.deepEqual(await service.handleWebhook(raw, header), { received: true });
 });
 
-test('ignores event types other than checkout.session.completed', async () => {
+test('ignores event types it has no handler for', async () => {
   const usage = usageStub();
-  const service = new BillingService(configStub, usage.service);
-  const raw = Buffer.from(JSON.stringify({ type: 'invoice.paid' }));
+  const service = new BillingService(configStub, usage.service, subscriptionsStub());
+  const raw = Buffer.from(JSON.stringify({ type: 'payment_intent.succeeded' }));
   const timestamp = Math.floor(Date.now() / 1000);
   const signature = createHmac('sha256', WEBHOOK_SECRET)
     .update(`${timestamp}.`)

@@ -3,3 +3,5 @@ export * from './message-role.enum';
 export * from './task-type.enum';
 export * from './credit-event-type.enum';
 export * from './credit-grant-reason.enum';
+export * from './credit-bucket.enum';
+export * from './subscription-status.enum';

@@ -6,6 +6,8 @@ export * from './user-skill.entity';
 export * from './scheduled-task.entity';
 export * from './credit-event.entity';
 export * from './credit-grant.entity';
+export * from './credit-allocation.entity';
+export * from './subscription.entity';
 export * from './message.entity';
 export * from './workspace-memory.entity';
 export * from './roas-snapshot.entity';
@@ -18,6 +20,7 @@ export * from './space-user.entity';
 export * from './space-auth-token.entity';
 export * from './space-record.entity';
 
+import { CreditAllocation } from './credit-allocation.entity';
 import { CreditEvent } from './credit-event.entity';
 import { CreditGrant } from './credit-grant.entity';
 import { Integration } from './integration.entity';
@@ -33,6 +36,7 @@ import { SpaceAuthToken } from './space-auth-token.entity';
 import { SpaceRecord } from './space-record.entity';
 import { SpaceUser } from './space-user.entity';
 import { Space } from './space.entity';
+import { Subscription } from './subscription.entity';
 import { User } from './user.entity';
 import { UserSkill } from './user-skill.entity';
 import { WorkspaceMemory } from './workspace-memory.entity';
@@ -48,6 +52,8 @@ export const entities = [
   ScheduledTask,
   CreditEvent,
   CreditGrant,
+  CreditAllocation,
+  Subscription,
   Message,
   WorkspaceMemory,
   RoasSnapshot,

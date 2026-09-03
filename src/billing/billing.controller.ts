@@ -4,7 +4,8 @@ import { Request } from 'express';
 import { CurrentUser, Public, RateLimit } from '../common/decorators';
 import { UsageService } from '../usage/usage.service';
 import { BillingService } from './billing.service';
-import { TopupDto } from './dto';
+import { SubscriptionsService } from './subscriptions.service';
+import { SubscribeDto, TopupDto } from './dto';
 
 @ApiTags('billing')
 @Controller('billing')
@@ -12,16 +13,41 @@ export class BillingController {
   constructor(
     private readonly billingService: BillingService,
     private readonly usageService: UsageService,
+    private readonly subscriptionsService: SubscriptionsService,
   ) {}
 
-  /** Everything the billing page needs: balance, offered packs, grant history. */
+  /**
+   * Everything the billing page needs: the bucket-split balance, the plans and
+   * packs on offer, the current subscription, and the grant history.
+   */
   @Get('summary')
   async summary(@CurrentUser('workspaceId') workspaceId: string) {
-    const [balance, grants] = await Promise.all([
+    const [balance, grants, subscription] = await Promise.all([
       this.usageService.getBalance(workspaceId),
       this.usageService.findGrantsForWorkspace(workspaceId),
+      this.subscriptionsService.findForWorkspace(workspaceId),
     ]);
-    return { balance, packs: this.billingService.getPacks(), grants };
+    return {
+      balance,
+      packs: this.billingService.getPacks(),
+      plans: this.billingService.getPlans(),
+      subscription,
+      grants,
+    };
+  }
+
+  /**
+   * Start a subscription checkout. Rate-limited like the top-up route, for the
+   * same reason: an unbounded loop here spends our Stripe API quota.
+   */
+  @RateLimit({ limit: 15, windowSeconds: 15 * 60 })
+  @Post('subscribe')
+  subscribe(
+    @CurrentUser('workspaceId') workspaceId: string,
+    @CurrentUser('userId') userId: string | null,
+    @Body() dto: SubscribeDto,
+  ) {
+    return this.billingService.createSubscriptionSession(workspaceId, userId ?? null, dto.planId);
   }
 
   /**

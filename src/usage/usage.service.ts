@@ -2,11 +2,16 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository, SelectQueryBuilder } from 'typeorm';
-import { buildCatalog, creditRates, listCostUsd } from '../ai/providers/model-catalog';
-import { CreditEventType, CreditGrantReason } from '../common/enums';
+import {
+  CREDITS_PER_DOLLAR,
+  buildCatalog,
+  creditRates,
+  listCostUsd,
+} from '../ai/providers/model-catalog';
+import { CreditBucket, CreditEventType, CreditGrantReason } from '../common/enums';
 import { AppConfig } from '../config/configuration';
 import { UsersService } from '../users/users.service';
-import { CreditEvent, CreditGrant, ScheduledTask } from '../database/entities';
+import { CreditAllocation, CreditEvent, CreditGrant, ScheduledTask } from '../database/entities';
 
 export interface UsageSummary {
   totalCreditsUsed: number;
@@ -14,28 +19,81 @@ export interface UsageSummary {
   eventCount: number;
 }
 
-/** A workspace's credit position: what it received, spent, and has left. */
+/** What one bucket still holds, and when the soonest slice of it dies. */
+export interface BucketBalance {
+  bucket: CreditBucket;
+  credits: number;
+  /** Earliest expiry among the grants making up this bucket; null if none expire. */
+  expiresAt: Date | null;
+}
+
+/**
+ * A workspace's credit position.
+ *
+ * `granted`, `used` and `balance` keep their original meanings so existing
+ * callers (the admin overview, the billing page) are unaffected — but `balance`
+ * now counts only *live* credits, since expired ones cannot be spent. The
+ * difference between the two is `expired`, reported separately rather than
+ * quietly folded into `used`: credits that ran out and credits that were
+ * consumed are very different conversations to have with a customer.
+ */
 export interface CreditBalance {
   granted: number;
   used: number;
   balance: number;
+  expired: number;
+  buckets: BucketBalance[];
 }
 
-/**
- * One credit = one US cent, so a dollar amount maps 1:100 to credits and the
- * grants ledger doubles as a revenue record.
- */
-export const CREDITS_PER_DOLLAR = 100;
+export { CREDITS_PER_DOLLAR };
 
-/** The one-time free credits every new workspace starts with ($100). */
-export const ONBOARDING_CREDITS = 100 * CREDITS_PER_DOLLAR;
+/**
+ * Free trial credits, granted per seat rather than per workspace.
+ *
+ * Per seat because the trial has to feel the same size to a solo founder and to
+ * a team of six: a flat workspace grant is generous to one and a rounding error
+ * to the other. These land in the REWARD bucket, so they never expire and are
+ * spent last — a workspace that later subscribes keeps whatever trial it never
+ * got round to using.
+ */
+export const TRIAL_CREDITS_PER_SEAT = 10_000;
+
+/**
+ * Seats a plan carries before the per-seat bonus starts, the bonus each further
+ * seat earns per period, and the ceiling on the total.
+ *
+ * The cap matters: without it a large team's bonus grows without bound and the
+ * plan's economics invert somewhere north of a few hundred seats.
+ */
+export const FREE_SEATS = 4;
+export const SEAT_BONUS_CREDITS = 25 * CREDITS_PER_DOLLAR;
+export const SEAT_BONUS_CAP = 1_000 * CREDITS_PER_DOLLAR;
+
+/**
+ * The order buckets are drained in: soonest to expire first, never-expiring
+ * last. Rollover dies at the end of this period and plan credits at the end of
+ * the next, so spending rollover first is simply spending what would otherwise
+ * be lost.
+ *
+ * The consequence is worth stating plainly, because it is the whole design:
+ * top-up and reward credits are only ever reached once the subscription
+ * allowance is exhausted. A workspace that stays inside its plan never touches
+ * them, which is why reward credits can be handed out freely — most are never
+ * redeemed.
+ */
+export const SPEND_ORDER: readonly CreditBucket[] = [
+  CreditBucket.ROLLOVER,
+  CreditBucket.PLAN,
+  CreditBucket.TOPUP,
+  CreditBucket.REWARD,
+];
 
 /**
  * Rate applied when a usage event names a model the catalog does not know —
  * one that has since been retired, or a gateway model dropped from config.
  * Deliberately Opus-priced so an unknown model is never billed too cheaply.
  */
-const UNKNOWN_MODEL_RATES = { input: 2.5, output: 12.5 };
+const UNKNOWN_MODEL_RATES = { input: 2, output: 10 };
 
 /** A single unit of metered consumption to persist. */
 export interface RecordUsageInput {
@@ -72,10 +130,91 @@ export interface GrantCreditsInput {
   userId?: string | null;
   reason: CreditGrantReason;
   credits: number;
+  /** Defaults to the bucket {@link bucketForReason} maps the reason to. */
+  bucket?: CreditBucket;
+  /** Omit for credits that never expire; required for PLAN and ROLLOVER. */
+  expiresAt?: Date | null;
   amountCents?: number | null;
   currency?: string | null;
   stripeSessionId?: string | null;
+  stripeInvoiceId?: string | null;
   note?: string | null;
+}
+
+/**
+ * Where a grant lands when the caller does not say.
+ *
+ * Bought credits are TOPUP, a plan's allowance is PLAN, and everything given
+ * away — trials, referrals, seat bonuses, support goodwill — is REWARD, which
+ * is both never-expiring and last to be spent.
+ */
+export function bucketForReason(reason: CreditGrantReason): CreditBucket {
+  switch (reason) {
+    case CreditGrantReason.TOPUP:
+      return CreditBucket.TOPUP;
+    case CreditGrantReason.SUBSCRIPTION:
+      return CreditBucket.PLAN;
+    case CreditGrantReason.ROLLOVER:
+      return CreditBucket.ROLLOVER;
+    default:
+      return CreditBucket.REWARD;
+  }
+}
+
+/** A grant with credits still on it, as the spend planner needs to see it. */
+export interface SpendableGrant {
+  id: string;
+  bucket: CreditBucket;
+  remaining: number;
+}
+
+/** One grant's contribution to paying for a single run. */
+export interface PlannedAllocation {
+  grantId: string;
+  bucket: CreditBucket;
+  credits: number;
+}
+
+/**
+ * Decide which grants pay for a run, in {@link SPEND_ORDER}.
+ *
+ * Pure and exported so the rule that governs every customer's balance can be
+ * tested without a database — this is the one piece of the billing model where
+ * an off-by-one silently moves money.
+ *
+ * Returns allocations totalling at most `credits`. A workspace holding less
+ * than the run costs is drained to zero and the shortfall left unallocated:
+ * the caller records the true charge either way, so the gap stays visible
+ * rather than being written off.
+ */
+export function planAllocations(
+  grants: readonly SpendableGrant[],
+  credits: number,
+): PlannedAllocation[] {
+  const ordered = [...grants].sort(
+    (a, b) => SPEND_ORDER.indexOf(a.bucket) - SPEND_ORDER.indexOf(b.bucket),
+  );
+  const out: PlannedAllocation[] = [];
+  let outstanding = Math.max(0, credits);
+
+  for (const grant of ordered) {
+    if (outstanding <= 0) break;
+    const take = Math.min(outstanding, grant.remaining);
+    if (take <= 0) continue;
+    out.push({ grantId: grant.id, bucket: grant.bucket, credits: take });
+    outstanding -= take;
+  }
+  return out;
+}
+
+/**
+ * A credit count as the dollar amount it represents, for grant notes and
+ * receipts. Whole dollars where it divides evenly, because "$25" reads as a
+ * price and "$25.00" reads as a line item.
+ */
+export function formatCredits(credits: number): string {
+  const dollars = credits / CREDITS_PER_DOLLAR;
+  return Number.isInteger(dollars) ? `$${dollars}` : `$${dollars.toFixed(2)}`;
 }
 
 /**
@@ -156,6 +295,8 @@ export class UsageService {
     private readonly creditEventRepository: Repository<CreditEvent>,
     @InjectRepository(CreditGrant)
     private readonly creditGrantRepository: Repository<CreditGrant>,
+    @InjectRepository(CreditAllocation)
+    private readonly creditAllocationRepository: Repository<CreditAllocation>,
     @InjectRepository(ScheduledTask)
     private readonly scheduledTaskRepository: Repository<ScheduledTask>,
     private readonly configService: ConfigService<AppConfig, true>,
@@ -195,8 +336,15 @@ export class UsageService {
       : 0;
   }
 
-  /** Persist an immutable usage event, pricing tokens by the model's own rates. */
-  recordEvent(input: RecordUsageInput): Promise<CreditEvent> {
+  /**
+   * Persist an immutable usage event and draw its cost from the workspace's
+   * grants in expiry order.
+   *
+   * The event is the charge; the allocations are which credits paid it. Both
+   * are written together so a run can never be metered without the balance
+   * moving, or vice versa.
+   */
+  async recordEvent(input: RecordUsageInput): Promise<CreditEvent> {
     const event = this.creditEventRepository.create({
       workspaceId: input.workspaceId,
       userId: input.userId ?? null,
@@ -216,7 +364,72 @@ export class UsageService {
       // stored value matches the column rather than relying on the driver.
       providerCostUsd: this.costUsdFor(input).toFixed(6),
     });
-    return this.creditEventRepository.save(event);
+    const saved = await this.creditEventRepository.save(event);
+    await this.allocate(saved);
+    return saved;
+  }
+
+  /**
+   * Spend `event.creditsUsed` across the workspace's live grants, soonest
+   * expiry first, and record what came from where.
+   *
+   * A workspace that overdraws — the run costs more than it holds — is allowed
+   * to finish: the allocations cover what existed and the event still records
+   * the full charge, so the shortfall is visible as the gap between them rather
+   * than silently written off. Cutting a reply off mid-sentence to save a
+   * fraction of a cent is the worse trade.
+   */
+  private async allocate(event: CreditEvent): Promise<CreditAllocation[]> {
+    const live = await this.liveGrantsForSpending(event.workspaceId);
+    const planned = planAllocations(live, event.creditsUsed);
+    if (planned.length === 0) return [];
+
+    return this.creditAllocationRepository.save(
+      planned.map((allocation) =>
+        this.creditAllocationRepository.create({
+          creditEventId: event.id,
+          grantId: allocation.grantId,
+          bucket: allocation.bucket,
+          credits: allocation.credits,
+        }),
+      ),
+    );
+  }
+
+  /**
+   * Every unexpired grant with credits left on it, ordered the way spending
+   * drains them: by bucket priority, then oldest first within a bucket so the
+   * nearest expiry inside the same pot goes first.
+   */
+  private async liveGrantsForSpending(workspaceId: string): Promise<SpendableGrant[]> {
+    const rows = await this.creditGrantRepository
+      .createQueryBuilder('grant')
+      .leftJoin(CreditAllocation, 'allocation', 'allocation."grantId" = grant.id')
+      .select('grant.id', 'id')
+      .addSelect('grant.bucket', 'bucket')
+      .addSelect('grant.credits', 'credits')
+      .addSelect('grant."expiresAt"', 'expiresAt')
+      .addSelect('COALESCE(SUM(allocation.credits), 0)', 'spent')
+      .where('grant."workspaceId" = :workspaceId', { workspaceId })
+      .andWhere('(grant."expiresAt" IS NULL OR grant."expiresAt" > NOW())')
+      .groupBy('grant.id')
+      .having('grant.credits > COALESCE(SUM(allocation.credits), 0)')
+      .orderBy('grant."createdAt"', 'ASC')
+      .getRawMany<{
+        id: string;
+        bucket: CreditBucket;
+        credits: number;
+        expiresAt: Date | null;
+        spent: string;
+      }>();
+
+    // Ordering across buckets is left to planAllocations; the SQL only has to
+    // deliver oldest-first within each, which the ORDER BY above does.
+    return rows.map((row) => ({
+      id: row.id,
+      bucket: row.bucket,
+      remaining: Number(row.credits) - Number(row.spent),
+    }));
   }
 
   /** Persist an immutable credit addition. */
@@ -225,30 +438,39 @@ export class UsageService {
       workspaceId: input.workspaceId,
       userId: input.userId ?? null,
       reason: input.reason,
+      bucket: input.bucket ?? bucketForReason(input.reason),
       credits: input.credits,
+      expiresAt: input.expiresAt ?? null,
       amountCents: input.amountCents ?? null,
       currency: input.currency ?? null,
       stripeSessionId: input.stripeSessionId ?? null,
+      stripeInvoiceId: input.stripeInvoiceId ?? null,
       note: input.note ?? null,
     });
     return this.creditGrantRepository.save(grant);
   }
 
   /**
-   * Give a workspace its one-time onboarding credits. Safe to call on every
-   * workspace upsert: a workspace that already has an onboarding grant (or was
-   * backfilled by migration) is left alone.
+   * Give a workspace its free trial credits, sized to the seats it has now.
+   *
+   * Safe to call on every workspace upsert: a workspace that already has an
+   * onboarding grant (or was backfilled by migration) is left alone. The seat
+   * count is read once, at first call — a team that grows later gets its extra
+   * credits through the per-period seat bonus, not by re-running the trial.
    */
   async grantOnboardingCredits(workspaceId: string): Promise<CreditGrant | null> {
     const existing = await this.creditGrantRepository.findOne({
       where: { workspaceId, reason: CreditGrantReason.ONBOARDING },
     });
     if (existing) return null;
+
+    const seats = Math.max(1, await this.usersService.countActiveByWorkspace(workspaceId));
+    const credits = seats * TRIAL_CREDITS_PER_SEAT;
     return this.grantCredits({
       workspaceId,
       reason: CreditGrantReason.ONBOARDING,
-      credits: ONBOARDING_CREDITS,
-      note: 'Free onboarding credits ($100)',
+      credits,
+      note: `Free trial — ${seats} seat${seats === 1 ? '' : 's'} (${formatCredits(credits)})`,
     });
   }
 
@@ -258,17 +480,70 @@ export class UsageService {
     return Boolean(existing);
   }
 
+  /**
+   * The workspace's credit position, split by bucket.
+   *
+   * `balance` counts only live credits — an expired plan allowance is gone and
+   * showing it as spendable would be a lie the checkout would then contradict.
+   * What expired is reported alongside rather than folded into `used`, because
+   * "you spent it" and "it ran out" are different answers to the same question.
+   */
   async getBalance(workspaceId: string): Promise<CreditBalance> {
-    const [granted, summary] = await Promise.all([
-      this.creditGrantRepository
-        .createQueryBuilder('grant')
-        .select('COALESCE(SUM(grant.credits), 0)', 'credits')
-        .where('grant.workspaceId = :workspaceId', { workspaceId })
-        .getRawOne<{ credits: string }>()
-        .then((raw) => Number(raw?.credits ?? 0)),
+    const remainingByGrant = this.creditGrantRepository
+      .createQueryBuilder('grant')
+      .leftJoin(CreditAllocation, 'allocation', 'allocation."grantId" = grant.id')
+      .select('grant.bucket', 'bucket')
+      .addSelect('grant."expiresAt" IS NOT NULL AND grant."expiresAt" <= NOW()', 'dead')
+      .addSelect('MIN(grant."expiresAt")', 'expiresAt')
+      .addSelect('SUM(grant.credits)', 'granted')
+      .addSelect('COALESCE(SUM(allocation.credits), 0)', 'spent')
+      .where('grant."workspaceId" = :workspaceId', { workspaceId })
+      .groupBy('grant.bucket')
+      .addGroupBy('grant."expiresAt" IS NOT NULL AND grant."expiresAt" <= NOW()');
+
+    const [rows, summary] = await Promise.all([
+      // Grouping by grant would be exact but returns a row per grant; grouping
+      // by (bucket, dead) is the same arithmetic because remaining is additive.
+      remainingByGrant.getRawMany<{
+        bucket: CreditBucket;
+        dead: boolean;
+        expiresAt: Date | null;
+        granted: string;
+        spent: string;
+      }>(),
       this.summarizeForWorkspace(workspaceId),
     ]);
-    return { granted, used: summary.totalCreditsUsed, balance: granted - summary.totalCreditsUsed };
+
+    let granted = 0;
+    let expired = 0;
+    const live = new Map<CreditBucket, BucketBalance>();
+
+    for (const row of rows) {
+      const rowGranted = Number(row.granted);
+      const remaining = Math.max(0, rowGranted - Number(row.spent));
+      granted += rowGranted;
+      if (row.dead) {
+        expired += remaining;
+        continue;
+      }
+      const existing = live.get(row.bucket);
+      const soonest =
+        existing?.expiresAt && row.expiresAt
+          ? new Date(Math.min(existing.expiresAt.getTime(), new Date(row.expiresAt).getTime()))
+          : (existing?.expiresAt ?? (row.expiresAt ? new Date(row.expiresAt) : null));
+      live.set(row.bucket, {
+        bucket: row.bucket,
+        credits: (existing?.credits ?? 0) + remaining,
+        expiresAt: soonest,
+      });
+    }
+
+    const buckets = SPEND_ORDER.map(
+      (bucket) => live.get(bucket) ?? { bucket, credits: 0, expiresAt: null },
+    );
+    const balance = buckets.reduce((total, bucket) => total + bucket.credits, 0);
+
+    return { granted, used: summary.totalCreditsUsed, balance, expired, buckets };
   }
 
   findGrantsForWorkspace(workspaceId: string, limit = 50): Promise<CreditGrant[]> {

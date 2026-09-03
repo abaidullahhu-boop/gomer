@@ -75,6 +75,17 @@ export class UsersService {
     });
   }
 
+  /**
+   * How many seats a workspace occupies — active members only.
+   *
+   * This is the number the trial grant and the per-period seat bonus are sized
+   * against, so deactivated members must not count: otherwise a workspace could
+   * farm seat credits by adding people and switching them off.
+   */
+  countActiveByWorkspace(workspaceId: string): Promise<number> {
+    return this.userRepository.count({ where: { workspaceId, isActive: true } });
+  }
+
   /** Every member of a workspace including deactivated ones — the admin roster. */
   listAllByWorkspace(workspaceId: string): Promise<User[]> {
     return this.userRepository.find({
