@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { CreditBucket } from '../common/enums';
-import { SpendableGrant, formatCredits, planAllocations } from './usage.service';
+import {
+  SpendableGrant,
+  TRIAL_CREDITS_FLOOR,
+  TRIAL_CREDITS_PER_SEAT,
+  formatCredits,
+  planAllocations,
+} from './usage.service';
 
 /** Shorthand for a grant with credits left on it. */
 function grant(id: string, bucket: CreditBucket, remaining: number): SpendableGrant {
@@ -97,4 +103,22 @@ test('renders credits as the dollars they represent', () => {
   assert.equal(formatCredits(10_000), '$25');
   assert.equal(formatCredits(20_000), '$50');
   assert.equal(formatCredits(150), '$0.38');
+});
+
+test('the trial is worth $100 to a solo workspace, as the pricing page promises', () => {
+  // Regression guard. These were once written as raw credit counts, and the
+  // literals survived the move from 100 to 400 credits per dollar untouched —
+  // silently cutting a solo signup's trial from $100 to $25 while the public
+  // page still advertised $100. Deriving both from the rate is the fix; this
+  // test is what stops the next denomination change reintroducing it.
+  assert.equal(formatCredits(TRIAL_CREDITS_FLOOR), '$100');
+  assert.equal(formatCredits(TRIAL_CREDITS_PER_SEAT), '$25');
+});
+
+test('the trial scales for real teams but never drops below the floor', () => {
+  const trialFor = (seats: number) => Math.max(TRIAL_CREDITS_FLOOR, seats * TRIAL_CREDITS_PER_SEAT);
+
+  assert.equal(formatCredits(trialFor(1)), '$100');
+  assert.equal(formatCredits(trialFor(4)), '$100');
+  assert.equal(formatCredits(trialFor(10)), '$250');
 });

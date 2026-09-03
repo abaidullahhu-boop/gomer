@@ -55,8 +55,22 @@ export { CREDITS_PER_DOLLAR };
  * to the other. These land in the REWARD bucket, so they never expire and are
  * spent last — a workspace that later subscribes keeps whatever trial it never
  * got round to using.
+ *
+ * Both figures are derived from {@link CREDITS_PER_DOLLAR} rather than written
+ * as credit counts. Writing the count directly is what broke this once already:
+ * the literal survived the move from 100 to 400 credits per dollar unchanged,
+ * quietly cutting the trial from $100 to $25.
  */
-export const TRIAL_CREDITS_PER_SEAT = 10_000;
+export const TRIAL_CREDITS_PER_SEAT = 25 * CREDITS_PER_DOLLAR;
+
+/**
+ * The smallest trial any workspace gets, regardless of seat count.
+ *
+ * The public pricing page promises $100 in credits, and most signups are a
+ * single seat — so without a floor the headline is false for almost everyone
+ * who reads it. Teams above four seats scale past this on the per-seat rate.
+ */
+export const TRIAL_CREDITS_FLOOR = 100 * CREDITS_PER_DOLLAR;
 
 /**
  * Seats a plan carries before the per-seat bonus starts, the bonus each further
@@ -465,7 +479,7 @@ export class UsageService {
     if (existing) return null;
 
     const seats = Math.max(1, await this.usersService.countActiveByWorkspace(workspaceId));
-    const credits = seats * TRIAL_CREDITS_PER_SEAT;
+    const credits = Math.max(TRIAL_CREDITS_FLOOR, seats * TRIAL_CREDITS_PER_SEAT);
     return this.grantCredits({
       workspaceId,
       reason: CreditGrantReason.ONBOARDING,
