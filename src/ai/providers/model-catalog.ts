@@ -51,11 +51,30 @@ export interface ModelDefinition {
 }
 
 /**
- * Multiple of list price charged to a workspace, covering infrastructure and
- * margin. Set so Opus lands at ~5 credits per 1K blended tokens, matching the
- * rate this platform charged when Opus was the only model.
+ * How many credits a dollar buys. Four hundred puts one credit at a quarter of
+ * a cent, which is the denomination the subscription plans are sized in.
+ *
+ * The number is cosmetic to the arithmetic — every rate below is derived from
+ * it — but not to the customer: a finer credit makes an allowance read as
+ * 40,000 rather than 10,000 for the same money. Changing it rescales every
+ * balance in the database, so it moves only alongside a migration that
+ * multiplies the existing ledger by the same factor.
  */
-export const CREDIT_MARGIN = 5;
+export const CREDITS_PER_DOLLAR = 400;
+
+/**
+ * Multiple of list price charged to a workspace.
+ *
+ * One means a workspace is charged exactly what the provider charges us for the
+ * tokens, which is what the pricing page claims. The margin is deliberately not
+ * here: it comes from unspent plan credits expiring, from prompt caching we pay
+ * for and the customer does not, and from buying inference below list — see
+ * `costInputPricePerMillion` below, which is what a token really costs us.
+ *
+ * Raising this above 1 puts a markup back on model costs and makes the pricing
+ * page's "no markup" claim false. That is a copy change as much as a code one.
+ */
+export const CREDIT_MARGIN = 1;
 
 /**
  * Anthropic models, priced from Anthropic's published rates. Every one supports
@@ -164,14 +183,18 @@ export function buildCatalog(gatewayModelsJson: string): ModelDefinition[] {
 /**
  * Credits charged per 1K input and output tokens.
  *
- * A dollar is 100 credits and a price is quoted per million tokens, so credits
- * per 1K token = dollars-per-million ÷ 10, then marked up. Opus lands at 2.5
- * input / 12.5 output, i.e. ~5 blended — the platform's historical rate.
+ * A price is quoted per million tokens, so a thousand tokens cost
+ * dollars-per-million ÷ 1000, which is then converted into credits and marked
+ * up. At 400 credits to the dollar and no markup, Opus lands at 2 credits per
+ * 1K input and 10 per 1K output — half a cent and two and a half cents, which
+ * is exactly Anthropic's list price.
  */
 export function creditRates(model: ModelDefinition): { input: number; output: number } {
+  const perCredit = (pricePerMillion: number) =>
+    (pricePerMillion / 1000) * CREDITS_PER_DOLLAR * CREDIT_MARGIN;
   return {
-    input: (model.inputPricePerMillion / 10) * CREDIT_MARGIN,
-    output: (model.outputPricePerMillion / 10) * CREDIT_MARGIN,
+    input: perCredit(model.inputPricePerMillion),
+    output: perCredit(model.outputPricePerMillion),
   };
 }
 
