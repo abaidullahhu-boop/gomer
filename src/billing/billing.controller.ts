@@ -40,6 +40,17 @@ export class BillingController {
    * Start a subscription checkout. Rate-limited like the top-up route, for the
    * same reason: an unbounded loop here spends our Stripe API quota.
    */
+  /**
+   * A link into Stripe's billing portal, where a member can update a failed
+   * card, cancel, resume, or fetch invoices. Rate-limited like the checkout
+   * routes, since each call is a Stripe API request on our quota.
+   */
+  @RateLimit({ limit: 15, windowSeconds: 15 * 60 })
+  @Post('portal')
+  portal(@CurrentUser('workspaceId') workspaceId: string) {
+    return this.billingService.createPortalSession(workspaceId);
+  }
+
   @RateLimit({ limit: 15, windowSeconds: 15 * 60 })
   @Post('subscribe')
   subscribe(
