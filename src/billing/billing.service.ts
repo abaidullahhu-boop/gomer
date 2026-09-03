@@ -169,6 +169,41 @@ export class BillingService {
     return { checkoutUrl: body.url };
   }
 
+  /**
+   * A link into Stripe's own billing portal for this workspace.
+   *
+   * Deliberately not a bespoke cancel button. The portal covers updating a
+   * failed card, cancelling, resuming, and downloading invoices — and the card
+   * case is the one that matters most: a `past_due` workspace currently has no
+   * way to fix its payment method anywhere in Gomer, so the subscription simply
+   * dies. Rebuilding that flow means holding card details ourselves, which is a
+   * different compliance question entirely.
+   *
+   * Whatever the customer changes comes back through the subscription webhooks,
+   * so the local mirror stays correct without polling.
+   */
+  async createPortalSession(workspaceId: string): Promise<{ portalUrl: string }> {
+    const subscription = await this.subscriptionsService.findForWorkspace(workspaceId);
+    if (!subscription) {
+      throw new BadRequestException('This workspace has no subscription to manage.');
+    }
+
+    const billingPage = `${this.configService.get('app', { infer: true }).frontendUrl}/dashboard/billing`;
+    const body = await this.stripePost<{ url?: string }>(
+      'billing_portal/sessions',
+      new URLSearchParams({
+        customer: subscription.stripeCustomerId,
+        return_url: billingPage,
+      }),
+    );
+    if (!body.url) {
+      throw new ServiceUnavailableException(
+        'Could not open the billing portal — try again shortly.',
+      );
+    }
+    return { portalUrl: body.url };
+  }
+
   /** POST a form to Stripe, raising a clean 503 on any non-2xx. */
   private async stripePost<T>(path: string, form: URLSearchParams): Promise<T> {
     const res = await fetch(`${STRIPE_BASE}/${path}`, {
