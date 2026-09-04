@@ -6,6 +6,7 @@ import { ENTITLED_STATUSES } from '../common/enums';
 import { CreditAllocation, CreditGrant, Subscription } from '../database/entities';
 import {
   FREE_SEATS,
+  GRANT_ALIAS,
   SEAT_BONUS_CAP,
   SEAT_BONUS_CREDITS,
   formatCredits,
@@ -208,12 +209,15 @@ export class SubscriptionsService {
   ): Promise<number> {
     const raw = await manager
       .getRepository(CreditGrant)
-      .createQueryBuilder('grant')
-      .leftJoin(CreditAllocation, 'allocation', 'allocation."grantId" = grant.id')
-      .select('COALESCE(SUM(grant.credits), 0) - COALESCE(SUM(allocation.credits), 0)', 'remaining')
-      .where('grant."workspaceId" = :workspaceId', { workspaceId })
-      .andWhere('grant.bucket = :bucket', { bucket: CreditBucket.PLAN })
-      .andWhere('(grant."expiresAt" IS NULL OR grant."expiresAt" > NOW())')
+      .createQueryBuilder(GRANT_ALIAS)
+      .leftJoin(CreditAllocation, 'allocation', `allocation."grantId" = ${GRANT_ALIAS}.id`)
+      .select(
+        `COALESCE(SUM(${GRANT_ALIAS}.credits), 0) - COALESCE(SUM(allocation.credits), 0)`,
+        'remaining',
+      )
+      .where(`${GRANT_ALIAS}."workspaceId" = :workspaceId`, { workspaceId })
+      .andWhere(`${GRANT_ALIAS}.bucket = :bucket`, { bucket: CreditBucket.PLAN })
+      .andWhere(`(${GRANT_ALIAS}."expiresAt" IS NULL OR ${GRANT_ALIAS}."expiresAt" > NOW())`)
       .getRawOne<{ remaining: string }>();
     return Math.max(0, Number(raw?.remaining ?? 0));
   }

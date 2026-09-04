@@ -22,6 +22,7 @@
     "test": "ts-node test/run-tests.ts",
     "probe:cache": "TS_NODE_COMPILER_OPTIONS='{\"module\":\"commonjs\",\"moduleResolution\":\"node\"}' ts-node -T scripts/cache-probe.ts",
     "credits": "TS_NODE_COMPILER_OPTIONS='{\"module\":\"commonjs\",\"moduleResolution\":\"node\"}' ts-node -T scripts/grant-credits.ts",
+    "check:credits": "TS_NODE_COMPILER_OPTIONS='{\"module\":\"commonjs\",\"moduleResolution\":\"node\"}' ts-node -T scripts/check-credit-balances.ts",
     "tool:sizes": "TS_NODE_COMPILER_OPTIONS='{\"module\":\"commonjs\",\"moduleResolution\":\"node\"}' ts-node -T scripts/tool-sizes.ts",
     "probe:route": "TS_NODE_COMPILER_OPTIONS='{\"module\":\"commonjs\",\"moduleResolution\":\"node\"}' ts-node -T scripts/route-probe.ts",
     "catalog:build": "TS_NODE_COMPILER_OPTIONS='{\"module\":\"commonjs\",\"moduleResolution\":\"node\"}' ts-node -T scripts/build-integration-catalog.ts",
