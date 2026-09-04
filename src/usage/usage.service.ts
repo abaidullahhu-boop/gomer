@@ -84,6 +84,23 @@ export const SEAT_BONUS_CREDITS = 25 * CREDITS_PER_DOLLAR;
 export const SEAT_BONUS_CAP = 1_000 * CREDITS_PER_DOLLAR;
 
 /**
+ * Query-builder alias for `credit_grants`, deliberately not `grant`.
+ *
+ * GRANT is a reserved word in Postgres, so an unquoted `grant` alias is a
+ * syntax error. TypeORM hides this most of the time: it rewrites the
+ * `alias.property` form into `"alias"."column"`, quoting as it goes. But a raw
+ * fragment that already names the column itself — `grant."expiresAt"`,
+ * `MIN(grant."expiresAt")` — does not match that pattern and is passed through
+ * verbatim, alias unquoted, and the query dies at runtime with nothing failing
+ * at compile time.
+ *
+ * Mixing the two forms in one builder is what shipped a broken balance query to
+ * production. Naming the alias something unreserved makes both forms safe, so
+ * the trap cannot be re-laid by writing a perfectly ordinary WHERE clause.
+ */
+export const GRANT_ALIAS = 'credit_grant';
+
+/**
  * The order buckets are drained in: soonest to expire first, never-expiring
  * last. Rollover dies at the end of this period and plan credits at the end of
  * the next, so spending rollover first is simply spending what would otherwise
@@ -417,18 +434,18 @@ export class UsageService {
    */
   private async liveGrantsForSpending(workspaceId: string): Promise<SpendableGrant[]> {
     const rows = await this.creditGrantRepository
-      .createQueryBuilder('grant')
-      .leftJoin(CreditAllocation, 'allocation', 'allocation."grantId" = grant.id')
-      .select('grant.id', 'id')
-      .addSelect('grant.bucket', 'bucket')
-      .addSelect('grant.credits', 'credits')
-      .addSelect('grant."expiresAt"', 'expiresAt')
+      .createQueryBuilder(GRANT_ALIAS)
+      .leftJoin(CreditAllocation, 'allocation', `allocation."grantId" = ${GRANT_ALIAS}.id`)
+      .select(`${GRANT_ALIAS}.id`, 'id')
+      .addSelect(`${GRANT_ALIAS}.bucket`, 'bucket')
+      .addSelect(`${GRANT_ALIAS}.credits`, 'credits')
+      .addSelect(`${GRANT_ALIAS}."expiresAt"`, 'expiresAt')
       .addSelect('COALESCE(SUM(allocation.credits), 0)', 'spent')
-      .where('grant."workspaceId" = :workspaceId', { workspaceId })
-      .andWhere('(grant."expiresAt" IS NULL OR grant."expiresAt" > NOW())')
-      .groupBy('grant.id')
-      .having('grant.credits > COALESCE(SUM(allocation.credits), 0)')
-      .orderBy('grant."createdAt"', 'ASC')
+      .where(`${GRANT_ALIAS}."workspaceId" = :workspaceId`, { workspaceId })
+      .andWhere(`(${GRANT_ALIAS}."expiresAt" IS NULL OR ${GRANT_ALIAS}."expiresAt" > NOW())`)
+      .groupBy(`${GRANT_ALIAS}.id`)
+      .having(`${GRANT_ALIAS}.credits > COALESCE(SUM(allocation.credits), 0)`)
+      .orderBy(`${GRANT_ALIAS}."createdAt"`, 'ASC')
       .getRawMany<{
         id: string;
         bucket: CreditBucket;
@@ -503,21 +520,25 @@ export class UsageService {
    * "you spent it" and "it ran out" are different answers to the same question.
    */
   async getBalance(workspaceId: string): Promise<CreditBalance> {
+    const isDead = `${GRANT_ALIAS}."expiresAt" IS NOT NULL AND ${GRANT_ALIAS}."expiresAt" <= NOW()`;
     const remainingByGrant = this.creditGrantRepository
-      .createQueryBuilder('grant')
-      .leftJoin(CreditAllocation, 'allocation', 'allocation."grantId" = grant.id')
-      .select('grant.bucket', 'bucket')
-      .addSelect('grant."expiresAt" IS NOT NULL AND grant."expiresAt" <= NOW()', 'dead')
-      .addSelect('MIN(grant."expiresAt")', 'expiresAt')
-      .addSelect('SUM(grant.credits)', 'granted')
+      .createQueryBuilder(GRANT_ALIAS)
+      .leftJoin(CreditAllocation, 'allocation', `allocation."grantId" = ${GRANT_ALIAS}.id`)
+      .select(`${GRANT_ALIAS}.bucket`, 'bucket')
+      .addSelect(isDead, 'dead')
+      .addSelect(`${GRANT_ALIAS}."expiresAt"`, 'expiresAt')
+      .addSelect(`${GRANT_ALIAS}.credits`, 'granted')
       .addSelect('COALESCE(SUM(allocation.credits), 0)', 'spent')
-      .where('grant."workspaceId" = :workspaceId', { workspaceId })
-      .groupBy('grant.bucket')
-      .addGroupBy('grant."expiresAt" IS NOT NULL AND grant."expiresAt" <= NOW()');
+      .where(`${GRANT_ALIAS}."workspaceId" = :workspaceId`, { workspaceId })
+      // One row per grant, not per bucket. Grouping by bucket looks equivalent
+      // and is not: the allocation join multiplies a grant's row by the number
+      // of times it has been drawn on, so SUM(credits) counts a twice-spent
+      // grant twice and the balance climbs as the workspace spends. Grouping by
+      // the primary key keeps `credits` a single grant's figure; folding the
+      // rows into buckets happens below, where the join cannot distort it.
+      .groupBy(`${GRANT_ALIAS}.id`);
 
     const [rows, summary] = await Promise.all([
-      // Grouping by grant would be exact but returns a row per grant; grouping
-      // by (bucket, dead) is the same arithmetic because remaining is additive.
       remainingByGrant.getRawMany<{
         bucket: CreditBucket;
         dead: boolean;
@@ -835,13 +856,13 @@ export class UsageService {
     workspaceId: string,
   ): Promise<Array<{ reason: string; credits: number; amountCents: number; count: number }>> {
     const rows = await this.creditGrantRepository
-      .createQueryBuilder('grant')
-      .select('grant.reason', 'reason')
-      .addSelect('SUM(grant.credits)', 'credits')
-      .addSelect('COALESCE(SUM(grant.amountCents), 0)', 'amount')
-      .addSelect('COUNT(grant.id)', 'count')
-      .where('grant.workspaceId = :workspaceId', { workspaceId })
-      .groupBy('grant.reason')
+      .createQueryBuilder(GRANT_ALIAS)
+      .select(`${GRANT_ALIAS}.reason`, 'reason')
+      .addSelect(`SUM(${GRANT_ALIAS}.credits)`, 'credits')
+      .addSelect(`COALESCE(SUM(${GRANT_ALIAS}.amountCents), 0)`, 'amount')
+      .addSelect(`COUNT(${GRANT_ALIAS}.id)`, 'count')
+      .where(`${GRANT_ALIAS}.workspaceId = :workspaceId`, { workspaceId })
+      .groupBy(`${GRANT_ALIAS}.reason`)
       .getRawMany<{ reason: string; credits: string; amount: string; count: string }>();
     return rows.map((row) => ({
       reason: row.reason,
