@@ -5,3 +5,5 @@ export * from './credit-event-type.enum';
 export * from './credit-grant-reason.enum';
 export * from './credit-bucket.enum';
 export * from './subscription-status.enum';
+export * from './bug-report-status.enum';
+export * from './bug-report-severity.enum';

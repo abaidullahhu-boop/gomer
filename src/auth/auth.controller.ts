@@ -15,8 +15,7 @@ import { ConfigService } from '@nestjs/config';
 import { Response } from 'express';
 import { CurrentUser, Public, RateLimit } from '../common/decorators';
 import { AppConfig } from '../config/configuration';
-import { User } from '../database/entities';
-import { AuthService, AuthTokens, WorkspaceMembership } from './auth.service';
+import { AuthService, AuthTokens, CurrentUserView, WorkspaceMembership } from './auth.service';
 import { RefreshTokenDto, SlackCallbackDto, SwitchWorkspaceDto } from './dto';
 import { ApiTags } from '@nestjs/swagger';
 
@@ -88,7 +87,7 @@ export class AuthController {
 
   /** Return the currently authenticated user. */
   @Get('me')
-  me(@CurrentUser('userId') userId: string): Promise<User> {
+  me(@CurrentUser('userId') userId: string): Promise<CurrentUserView> {
     return this.authService.getCurrentUser(userId);
   }
 

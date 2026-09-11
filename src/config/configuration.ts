@@ -88,7 +88,34 @@ export interface AppConfig {
     /** Signing secret of the Stripe webhook endpoint. */
     stripeWebhookSecret: string;
   };
+  superAdmin: {
+    /**
+     * Email addresses allowed into the platform-owner panel, which reads across
+     * every tenant.
+     *
+     * Deliberately environment state rather than a column or a role. A `users`
+     * row is workspace-scoped — the same person is several rows — so a flag
+     * there would have to be set once per membership and could be granted by
+     * anything that can write the table. An allowlist can only be changed by
+     * whoever can change the deployment's environment, which is the same
+     * authority that owns the data the panel exposes.
+     */
+    emails: string[];
+  };
 }
+
+/**
+ * Parse a comma-separated address list into a normalized allowlist.
+ *
+ * Lowercased because Slack reports a profile's email in whatever case the user
+ * typed it, and an owner locked out of their own panel by a capital letter is a
+ * support ticket with no visible cause.
+ */
+const parseEmailList = (raw: string): string[] =>
+  raw
+    .split(',')
+    .map((email) => email.trim().toLowerCase())
+    .filter(Boolean);
 
 export const configuration = (): AppConfig => ({
   app: {
@@ -150,5 +177,8 @@ export const configuration = (): AppConfig => ({
   billing: {
     stripeSecretKey: process.env.STRIPE_SECRET_KEY ?? '',
     stripeWebhookSecret: process.env.STRIPE_WEBHOOK_SECRET ?? '',
+  },
+  superAdmin: {
+    emails: parseEmailList(process.env.SUPER_ADMIN_EMAILS ?? ''),
   },
 });

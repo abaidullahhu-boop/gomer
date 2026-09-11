@@ -6,6 +6,7 @@ import { AdminModule } from './admin/admin.module';
 import { AiModule } from './ai/ai.module';
 import { AuthModule } from './auth/auth.module';
 import { BillingModule } from './billing/billing.module';
+import { BugReportsModule } from './bug-reports/bug-reports.module';
 import { AllExceptionsFilter } from './common/filters';
 import { JwtAuthGuard, RateLimitGuard, RolesGuard } from './common/guards';
 import { LoggingInterceptor } from './common/interceptors';
@@ -21,6 +22,7 @@ import { RulesSchedulerModule } from './rules/rules-scheduler.module';
 import { SkillsModule } from './skills/skills.module';
 import { SlackModule } from './slack/slack.module';
 import { SpacesModule } from './spaces/spaces.module';
+import { SuperAdminModule } from './super-admin/super-admin.module';
 import { TasksModule } from './tasks/tasks.module';
 import { UsageModule } from './usage/usage.module';
 import { UsersModule } from './users/users.module';
@@ -52,6 +54,8 @@ import { WorkspacesModule } from './workspaces/workspaces.module';
     UsageModule,
     BillingModule,
     AdminModule,
+    SuperAdminModule,
+    BugReportsModule,
     HealthModule,
   ],
   providers: [

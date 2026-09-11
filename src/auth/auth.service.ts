@@ -14,6 +14,7 @@ import { AppConfig } from '../config/configuration';
 import { User, Workspace } from '../database/entities';
 import { buildWelcomeMessage } from '../slack/slack-messages';
 import { SlackService } from '../slack/slack.service';
+import { SuperAdminAccessService } from '../super-admin/super-admin-access.service';
 import { TasksService } from '../tasks/tasks.service';
 import { UsersService } from '../users/users.service';
 import { WorkspacesService } from '../workspaces/workspaces.service';
@@ -26,6 +27,26 @@ export interface AuthTokens {
 export interface AuthResult extends AuthTokens {
   user: User;
   workspace: Workspace;
+}
+
+/**
+ * The signed-in user, as `GET /auth/me` exposes them.
+ *
+ * A hand-written projection of {@link User} rather than the entity: see
+ * {@link AuthService.getCurrentUser}. Adding a column to `users` must not
+ * silently add it to this response.
+ */
+export interface CurrentUserView {
+  id: string;
+  workspaceId: string;
+  slackUserId: string;
+  name: string;
+  email: string | null;
+  avatarUrl: string | null;
+  role: UserRole;
+  isActive: boolean;
+  /** True when this user is on the platform-owner allowlist. */
+  isSuperAdmin: boolean;
 }
 
 /** A workspace the user belongs to, as exposed by `GET /auth/workspaces`. */
@@ -50,6 +71,7 @@ export class AuthService {
     private readonly workspacesService: WorkspacesService,
     private readonly slackService: SlackService,
     private readonly tasksService: TasksService,
+    private readonly superAdminAccess: SuperAdminAccessService,
   ) {}
 
   /** Returns the Slack "Add to Slack" install URL. */
@@ -146,9 +168,32 @@ export class AuthService {
     await this.usersService.setRefreshTokenHash(userId, null);
   }
 
-  /** Returns the current user's profile. */
-  async getCurrentUser(userId: string): Promise<User> {
-    return this.usersService.findByIdOrFail(userId);
+  /**
+   * Returns the current user's profile.
+   *
+   * An explicit projection, not the entity. The entity carries
+   * `refreshTokenHash`, and returning it whole shipped that hash to the browser
+   * on every dashboard load — a bcrypt digest of the credential that mints
+   * fresh access tokens for seven days. Nothing consumed it, which is exactly
+   * why it went unnoticed.
+   *
+   * `isSuperAdmin` rides along here rather than on its own endpoint: the
+   * dashboard already loads this on boot, so the owner panel's nav entry can be
+   * decided without a second request or a flash of the wrong navigation.
+   */
+  async getCurrentUser(userId: string): Promise<CurrentUserView> {
+    const user = await this.usersService.findByIdOrFail(userId);
+    return {
+      id: user.id,
+      workspaceId: user.workspaceId,
+      slackUserId: user.slackUserId,
+      name: user.name,
+      email: user.email,
+      avatarUrl: user.avatarUrl,
+      role: user.role,
+      isActive: user.isActive,
+      isSuperAdmin: this.superAdminAccess.isSuperAdmin(user.email),
+    };
   }
 
   /** Lists every workspace the user is a member of, flagging the current one. */

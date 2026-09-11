@@ -19,7 +19,9 @@ export * from './space.entity';
 export * from './space-user.entity';
 export * from './space-auth-token.entity';
 export * from './space-record.entity';
+export * from './bug-report.entity';
 
+import { BugReport } from './bug-report.entity';
 import { CreditAllocation } from './credit-allocation.entity';
 import { CreditEvent } from './credit-event.entity';
 import { CreditGrant } from './credit-grant.entity';
@@ -65,4 +67,5 @@ export const entities = [
   SpaceUser,
   SpaceAuthToken,
   SpaceRecord,
+  BugReport,
 ];

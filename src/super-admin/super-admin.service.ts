@@ -1,0 +1,596 @@
+import { Injectable, NotFoundException } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
+import { CREDITS_PER_DOLLAR } from '../ai/providers/model-catalog';
+import { BugReportStatus, UserRole } from '../common/enums';
+import {
+  BugReport,
+  CreditEvent,
+  CreditGrant,
+  Integration,
+  Subscription,
+  User,
+  Workspace,
+} from '../database/entities';
+import { DateRange, GRANT_ALIAS, UsageService } from '../usage/usage.service';
+import { UsersService } from '../users/users.service';
+
+/**
+ * Query-builder alias for `users`, deliberately not `user`.
+ *
+ * The same trap {@link GRANT_ALIAS} exists to avoid, on a different reserved
+ * word. USER is a reserved niladic function in Postgres — bare `user` evaluates
+ * to the session user — so `user."isActive"` is a syntax error.
+ *
+ * TypeORM hides this for the `alias.property` form, which it rewrites into
+ * `"alias"."column"`, quoting as it goes. A raw fragment that already names the
+ * column — the `FILTER (WHERE ...)` clauses below — does not match that pattern
+ * and is passed through verbatim, alias unquoted, so it compiles fine and dies
+ * at runtime. Naming the alias something unreserved makes both forms safe.
+ */
+const USER_ALIAS = 'member';
+
+/** One tenant on the owner panel's workspace table. */
+export interface PlatformWorkspaceRow {
+  id: string;
+  name: string;
+  slackTeamId: string;
+  createdAt: Date;
+  members: { total: number; active: number };
+  credits: { granted: number; used: number; balance: number };
+  /** Cash actually taken for this workspace, in cents. */
+  paidCents: number;
+  plan: { planId: string; status: string; seats: number; currentPeriodEnd: Date } | null;
+  connectedAccounts: number;
+  lastActivityAt: Date | null;
+}
+
+/** The per-workspace aggregates, keyed by workspace id, that the table merges. */
+interface WorkspaceAggregates {
+  members: Map<string, { total: number; active: number }>;
+  credits: Map<string, { granted: number; used: number; balance: number; paidCents: number }>;
+  integrations: Map<string, number>;
+  activity: Map<string, Date>;
+  plans: Map<string, Subscription>;
+}
+
+/**
+ * The read model behind the platform owner's panel.
+ *
+ * Every other service in this app is tenant-scoped by construction — the README
+ * calls it the security posture, and `AdminService` right next door takes a
+ * `workspaceId` on every method. This one is the deliberate exception, and the
+ * only one: it answers questions about the business rather than about a
+ * customer. It is reachable exclusively through {@link SuperAdminGuard}.
+ *
+ * The queries here are grouped rather than looped. `scripts/grant-credits.ts`
+ * does the same job by listing workspaces and calling `getBalance()` on each,
+ * which is fine for a CLI run once by hand and quadratic on a page that loads
+ * every time the owner opens a tab.
+ */
+@Injectable()
+export class SuperAdminService {
+  constructor(
+    @InjectRepository(Workspace)
+    private readonly workspaceRepository: Repository<Workspace>,
+    @InjectRepository(User)
+    private readonly userRepository: Repository<User>,
+    @InjectRepository(CreditEvent)
+    private readonly creditEventRepository: Repository<CreditEvent>,
+    @InjectRepository(CreditGrant)
+    private readonly creditGrantRepository: Repository<CreditGrant>,
+    @InjectRepository(Subscription)
+    private readonly subscriptionRepository: Repository<Subscription>,
+    @InjectRepository(Integration)
+    private readonly integrationRepository: Repository<Integration>,
+    @InjectRepository(BugReport)
+    private readonly bugReportRepository: Repository<BugReport>,
+    private readonly usageService: UsageService,
+    private readonly usersService: UsersService,
+  ) {}
+
+  /**
+   * Credits still live, spent, and granted — per workspace, in one query.
+   *
+   * The allocation totals are folded to one row per grant *inside a subquery*
+   * before the join, which is the whole trick. Joining `credit_allocations`
+   * directly multiplies a grant's row by the number of times it has been drawn
+   * on, so `SUM(credits)` counts a twice-spent grant twice and a workspace's
+   * granted total climbs as it spends. That exact bug shipped once on the
+   * single-workspace balance query (see `UsageService.getBalance`); the
+   * pre-aggregated join makes it unrepresentable here.
+   *
+   * `balance` counts only unexpired grants, matching what `getBalance` calls
+   * spendable, so a workspace's row and its drill-in never disagree.
+   */
+  private async creditsByWorkspace(
+    workspaceIds: string[],
+  ): Promise<Map<string, { granted: number; used: number; balance: number; paidCents: number }>> {
+    const out = new Map<
+      string,
+      { granted: number; used: number; balance: number; paidCents: number }
+    >();
+    if (workspaceIds.length === 0) return out;
+
+    const grantRows = await this.creditGrantRepository
+      .createQueryBuilder(GRANT_ALIAS)
+      .leftJoin(
+        (sub) =>
+          sub
+            .select('allocation."grantId"', 'grantId')
+            .addSelect('SUM(allocation.credits)', 'spent')
+            .from('credit_allocations', 'allocation')
+            .groupBy('allocation."grantId"'),
+        'spend',
+        `spend."grantId" = ${GRANT_ALIAS}.id`,
+      )
+      .select(`${GRANT_ALIAS}."workspaceId"`, 'workspaceId')
+      .addSelect(`COALESCE(SUM(${GRANT_ALIAS}.credits), 0)`, 'granted')
+      .addSelect(`COALESCE(SUM(${GRANT_ALIAS}."amountCents"), 0)`, 'paid')
+      .addSelect(
+        `COALESCE(SUM(
+          CASE WHEN ${GRANT_ALIAS}."expiresAt" IS NULL OR ${GRANT_ALIAS}."expiresAt" > NOW()
+               THEN GREATEST(${GRANT_ALIAS}.credits - COALESCE(spend.spent, 0), 0)
+               ELSE 0 END
+        ), 0)`,
+        'live',
+      )
+      .where(`${GRANT_ALIAS}."workspaceId" IN (:...workspaceIds)`, { workspaceIds })
+      .groupBy(`${GRANT_ALIAS}."workspaceId"`)
+      .getRawMany<{ workspaceId: string; granted: string; paid: string; live: string }>();
+
+    const usedRows = await this.creditEventRepository
+      .createQueryBuilder('event')
+      .select('event."workspaceId"', 'workspaceId')
+      .addSelect('COALESCE(SUM(event."creditsUsed"), 0)', 'used')
+      .where('event."workspaceId" IN (:...workspaceIds)', { workspaceIds })
+      .groupBy('event."workspaceId"')
+      .getRawMany<{ workspaceId: string; used: string }>();
+
+    const usedById = new Map(usedRows.map((row) => [row.workspaceId, Number(row.used)]));
+    for (const id of workspaceIds) {
+      const grants = grantRows.find((row) => row.workspaceId === id);
+      out.set(id, {
+        granted: Number(grants?.granted ?? 0),
+        balance: Number(grants?.live ?? 0),
+        paidCents: Number(grants?.paid ?? 0),
+        used: usedById.get(id) ?? 0,
+      });
+    }
+    return out;
+  }
+
+  /** Every per-workspace aggregate the table needs, fetched side by side. */
+  private async aggregatesFor(workspaceIds: string[]): Promise<WorkspaceAggregates> {
+    const empty: WorkspaceAggregates = {
+      members: new Map(),
+      credits: new Map(),
+      integrations: new Map(),
+      activity: new Map(),
+      plans: new Map(),
+    };
+    if (workspaceIds.length === 0) return empty;
+
+    const [memberRows, credits, integrationRows, activityRows, subscriptions] = await Promise.all([
+      this.userRepository
+        .createQueryBuilder(USER_ALIAS)
+        .select(`${USER_ALIAS}."workspaceId"`, 'workspaceId')
+        .addSelect(`COUNT(${USER_ALIAS}.id)`, 'total')
+        .addSelect(`COUNT(${USER_ALIAS}.id) FILTER (WHERE ${USER_ALIAS}."isActive")`, 'active')
+        .where(`${USER_ALIAS}."workspaceId" IN (:...workspaceIds)`, { workspaceIds })
+        .groupBy(`${USER_ALIAS}."workspaceId"`)
+        .getRawMany<{ workspaceId: string; total: string; active: string }>(),
+      this.creditsByWorkspace(workspaceIds),
+      this.integrationRepository
+        .createQueryBuilder('integration')
+        .select('integration."workspaceId"', 'workspaceId')
+        .addSelect('COUNT(integration.id)', 'count')
+        .where('integration."workspaceId" IN (:...workspaceIds)', { workspaceIds })
+        .andWhere('integration."isActive"')
+        .groupBy('integration."workspaceId"')
+        .getRawMany<{ workspaceId: string; count: string }>(),
+      this.creditEventRepository
+        .createQueryBuilder('event')
+        .select('event."workspaceId"', 'workspaceId')
+        .addSelect('MAX(event."createdAt")', 'lastActivityAt')
+        .where('event."workspaceId" IN (:...workspaceIds)', { workspaceIds })
+        .groupBy('event."workspaceId"')
+        .getRawMany<{ workspaceId: string; lastActivityAt: Date }>(),
+      this.subscriptionRepository
+        .createQueryBuilder('subscription')
+        .where('subscription."workspaceId" IN (:...workspaceIds)', { workspaceIds })
+        .getMany(),
+    ]);
+
+    return {
+      members: new Map(
+        memberRows.map((row) => [
+          row.workspaceId,
+          { total: Number(row.total), active: Number(row.active) },
+        ]),
+      ),
+      credits,
+      integrations: new Map(integrationRows.map((row) => [row.workspaceId, Number(row.count)])),
+      activity: new Map(activityRows.map((row) => [row.workspaceId, row.lastActivityAt])),
+      plans: new Map(subscriptions.map((row) => [row.workspaceId, row])),
+    };
+  }
+
+  /** Turn a workspace plus its aggregates into a table row. */
+  private toWorkspaceRow(
+    workspace: Workspace,
+    aggregates: WorkspaceAggregates,
+  ): PlatformWorkspaceRow {
+    const credits = aggregates.credits.get(workspace.id);
+    const plan = aggregates.plans.get(workspace.id);
+    return {
+      id: workspace.id,
+      name: workspace.name,
+      slackTeamId: workspace.slackTeamId,
+      createdAt: workspace.createdAt,
+      members: aggregates.members.get(workspace.id) ?? { total: 0, active: 0 },
+      credits: {
+        granted: credits?.granted ?? 0,
+        used: credits?.used ?? 0,
+        balance: credits?.balance ?? 0,
+      },
+      paidCents: credits?.paidCents ?? 0,
+      plan: plan
+        ? {
+            planId: plan.planId,
+            status: plan.status,
+            seats: plan.seats,
+            currentPeriodEnd: plan.currentPeriodEnd,
+          }
+        : null,
+      connectedAccounts: aggregates.integrations.get(workspace.id) ?? 0,
+      lastActivityAt: aggregates.activity.get(workspace.id) ?? null,
+    };
+  }
+
+  /**
+   * The customer table: every workspace, newest first, with its numbers.
+   *
+   * Paged rather than "all of them" — the aggregate queries take an id list, so
+   * the page size bounds the work regardless of how many tenants exist.
+   */
+  async listWorkspaces(options: { search?: string; limit?: number; offset?: number } = {}): Promise<{
+    total: number;
+    rows: PlatformWorkspaceRow[];
+  }> {
+    const limit = Math.min(Math.max(options.limit ?? 50, 1), 200);
+    const offset = Math.max(options.offset ?? 0, 0);
+
+    const query = this.workspaceRepository
+      .createQueryBuilder('workspace')
+      .orderBy('workspace."createdAt"', 'DESC')
+      .skip(offset)
+      .take(limit);
+
+    const search = options.search?.trim();
+    if (search) {
+      // Matched on the two identifiers the owner actually has to hand when
+      // someone emails in: what the workspace is called, and its Slack team id.
+      query.where('(workspace.name ILIKE :search OR workspace."slackTeamId" ILIKE :search)', {
+        search: `%${search}%`,
+      });
+    }
+
+    const [workspaces, total] = await query.getManyAndCount();
+    const aggregates = await this.aggregatesFor(workspaces.map((workspace) => workspace.id));
+    return {
+      total,
+      rows: workspaces.map((workspace) => this.toWorkspaceRow(workspace, aggregates)),
+    };
+  }
+
+  /**
+   * Everything about one customer, on one screen.
+   *
+   * Reuses the tenant-scoped services wholesale — this is the one place where
+   * the N+1 the list view avoids is correct, because N is one.
+   */
+  async workspaceDetail(workspaceId: string) {
+    const workspace = await this.workspaceRepository.findOne({ where: { id: workspaceId } });
+    if (!workspace) {
+      throw new NotFoundException(`Workspace ${workspaceId} not found`);
+    }
+
+    const to = new Date();
+    const range: DateRange = { from: new Date(to.getTime() - 30 * 86_400_000), to };
+
+    const [members, balance, usage, grants, subscription, integrations, cost, activity, bugs] =
+      await Promise.all([
+        this.usersService.listAllByWorkspace(workspaceId),
+        this.usageService.getBalance(workspaceId),
+        this.usageService.summarizeForWorkspace(workspaceId),
+        this.usageService.findGrantsForWorkspace(workspaceId),
+        this.subscriptionRepository.findOne({ where: { workspaceId } }),
+        this.integrationRepository.find({ where: { workspaceId, isActive: true } }),
+        this.usageService.costSummary(workspaceId, range),
+        this.usageService.recentActivity(workspaceId, { limit: 25 }),
+        this.bugReportRepository.count({ where: { workspaceId } }),
+      ]);
+
+    return {
+      workspace: {
+        id: workspace.id,
+        name: workspace.name,
+        slackTeamId: workspace.slackTeamId,
+        defaultModel: workspace.defaultModel,
+        createdAt: workspace.createdAt,
+      },
+      members: members.map((member) => ({
+        id: member.id,
+        name: member.name,
+        email: member.email,
+        avatarUrl: member.avatarUrl,
+        role: member.role,
+        isActive: member.isActive,
+        lastActiveAt: member.lastActiveAt,
+        createdAt: member.createdAt,
+      })),
+      credits: balance,
+      usage,
+      // 30 days of margin, so the drill-in answers "is this customer profitable"
+      // and not just "how much have they spent".
+      cost,
+      subscription,
+      grants,
+      integrations: integrations.map((integration) => ({
+        id: integration.id,
+        provider: integration.provider,
+        appSlug: integration.appSlug,
+        accountName: integration.accountName,
+        accessLevel: integration.accessLevel,
+        createdAt: integration.createdAt,
+      })),
+      recentActivity: activity,
+      bugReportCount: bugs,
+    };
+  }
+
+  /**
+   * Platform headline numbers.
+   *
+   * Revenue is the sum of `credit_grants.amountCents`, which is what was
+   * actually collected and recorded — Stripe remains the source of truth for
+   * money, and this figure is a ledger read, not an invoice total. Cost and
+   * margin come from the same window so the three can be read together.
+   */
+  async overview(days = 30) {
+    const to = new Date();
+    const from = new Date(to.getTime() - days * 86_400_000);
+
+    const [
+      workspaceCount,
+      newWorkspaces,
+      userCounts,
+      grantTotals,
+      windowGrants,
+      eventTotals,
+      windowEvents,
+      bugCounts,
+    ] = await Promise.all([
+      this.workspaceRepository.count(),
+      this.workspaceRepository
+        .createQueryBuilder('workspace')
+        .where('workspace."createdAt" >= :from', { from })
+        .getCount(),
+      this.userRepository
+        .createQueryBuilder(USER_ALIAS)
+        .select(`COUNT(${USER_ALIAS}.id)`, 'total')
+        .addSelect(`COUNT(${USER_ALIAS}.id) FILTER (WHERE ${USER_ALIAS}."isActive")`, 'active')
+        .addSelect(
+          `COUNT(${USER_ALIAS}.id) FILTER (WHERE ${USER_ALIAS}."lastActiveAt" >= :from)`,
+          'activeInWindow',
+        )
+        .addSelect(`COUNT(${USER_ALIAS}.id) FILTER (WHERE ${USER_ALIAS}.role = :adminRole)`, 'admins')
+        .setParameters({ from, adminRole: UserRole.ADMIN })
+        .getRawOne<Record<string, string>>(),
+      this.creditGrantRepository
+        .createQueryBuilder(GRANT_ALIAS)
+        .select(`COALESCE(SUM(${GRANT_ALIAS}.credits), 0)`, 'credits')
+        .addSelect(`COALESCE(SUM(${GRANT_ALIAS}."amountCents"), 0)`, 'paid')
+        .getRawOne<Record<string, string>>(),
+      this.creditGrantRepository
+        .createQueryBuilder(GRANT_ALIAS)
+        .select(`COALESCE(SUM(${GRANT_ALIAS}."amountCents"), 0)`, 'paid')
+        .where(`${GRANT_ALIAS}."createdAt" >= :from`, { from })
+        .getRawOne<Record<string, string>>(),
+      this.creditEventRepository
+        .createQueryBuilder('event')
+        .select('COALESCE(SUM(event."creditsUsed"), 0)', 'credits')
+        .addSelect('COALESCE(SUM(event."providerCostUsd"), 0)', 'cost')
+        .addSelect('COUNT(event.id)', 'events')
+        .getRawOne<Record<string, string>>(),
+      this.creditEventRepository
+        .createQueryBuilder('event')
+        .select('COALESCE(SUM(event."creditsUsed"), 0)', 'credits')
+        .addSelect('COALESCE(SUM(event."providerCostUsd"), 0)', 'cost')
+        .addSelect('COUNT(event.id)', 'events')
+        .where('event."createdAt" >= :from', { from })
+        .getRawOne<Record<string, string>>(),
+      this.bugReportRepository
+        .createQueryBuilder('bug')
+        .select('bug.status', 'status')
+        .addSelect('COUNT(bug.id)', 'count')
+        .groupBy('bug.status')
+        .getRawMany<{ status: BugReportStatus; count: string }>(),
+    ]);
+
+    const windowChargedUsd = Number(windowEvents?.credits ?? 0) / CREDITS_PER_DOLLAR;
+    const windowCostUsd = Number(windowEvents?.cost ?? 0);
+
+    return {
+      days,
+      range: { from: from.toISOString(), to: to.toISOString() },
+      workspaces: { total: workspaceCount, newInWindow: newWorkspaces },
+      users: {
+        total: Number(userCounts?.total ?? 0),
+        active: Number(userCounts?.active ?? 0),
+        activeInWindow: Number(userCounts?.activeInWindow ?? 0),
+        admins: Number(userCounts?.admins ?? 0),
+      },
+      revenue: {
+        totalCents: Number(grantTotals?.paid ?? 0),
+        windowCents: Number(windowGrants?.paid ?? 0),
+      },
+      credits: {
+        granted: Number(grantTotals?.credits ?? 0),
+        used: Number(eventTotals?.credits ?? 0),
+        events: Number(eventTotals?.events ?? 0),
+      },
+      // Charged is what workspaces burned in credits, valued at the credit rate;
+      // cost is what the providers billed us for the same runs.
+      margin: {
+        chargedUsd: windowChargedUsd,
+        costUsd: windowCostUsd,
+        marginUsd: windowChargedUsd - windowCostUsd,
+        events: Number(windowEvents?.events ?? 0),
+      },
+      bugs: {
+        open: Number(
+          bugCounts.find((row) => row.status === BugReportStatus.OPEN)?.count ?? 0,
+        ),
+        inProgress: Number(
+          bugCounts.find((row) => row.status === BugReportStatus.IN_PROGRESS)?.count ?? 0,
+        ),
+        total: bugCounts.reduce((sum, row) => sum + Number(row.count), 0),
+      },
+    };
+  }
+
+  /**
+   * Daily signups and platform-wide credit burn over the window.
+   *
+   * Two separate group-bys stitched together on the day key rather than a join:
+   * a workspace created on a quiet day has no events, an event can land on a day
+   * nobody signed up, and an inner join would silently drop whichever side was
+   * missing. Days with neither still appear, at zero, so the chart's x-axis is
+   * the calendar rather than the data.
+   */
+  async growth(days = 30) {
+    const to = new Date();
+    const from = new Date(to.getTime() - days * 86_400_000);
+
+    const [signups, usage] = await Promise.all([
+      this.workspaceRepository
+        .createQueryBuilder('workspace')
+        .select(`to_char(date_trunc('day', workspace."createdAt"), 'YYYY-MM-DD')`, 'day')
+        .addSelect('COUNT(workspace.id)', 'count')
+        .where('workspace."createdAt" >= :from', { from })
+        .groupBy('day')
+        .getRawMany<{ day: string; count: string }>(),
+      this.creditEventRepository
+        .createQueryBuilder('event')
+        .select(`to_char(date_trunc('day', event."createdAt"), 'YYYY-MM-DD')`, 'day')
+        .addSelect('COALESCE(SUM(event."creditsUsed"), 0)', 'credits')
+        .addSelect('COALESCE(SUM(event."providerCostUsd"), 0)', 'cost')
+        .where('event."createdAt" >= :from', { from })
+        .groupBy('day')
+        .getRawMany<{ day: string; credits: string; cost: string }>(),
+    ]);
+
+    const signupsByDay = new Map(signups.map((row) => [row.day, Number(row.count)]));
+    const usageByDay = new Map(usage.map((row) => [row.day, row]));
+
+    const series: Array<{ day: string; signups: number; credits: number; costUsd: number }> = [];
+    const cursor = new Date(from);
+    cursor.setUTCHours(0, 0, 0, 0);
+    const last = new Date(to);
+    last.setUTCHours(0, 0, 0, 0);
+    while (cursor.getTime() <= last.getTime()) {
+      const day = cursor.toISOString().slice(0, 10);
+      const row = usageByDay.get(day);
+      series.push({
+        day,
+        signups: signupsByDay.get(day) ?? 0,
+        credits: Number(row?.credits ?? 0),
+        costUsd: Number(row?.cost ?? 0),
+      });
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
+    }
+    return { days, series };
+  }
+
+  /** One inbox row, with its workspace and reporter flattened for the table. */
+  private toBugReportView(report: BugReport) {
+    return {
+      id: report.id,
+      title: report.title,
+      description: report.description,
+      stepsToReproduce: report.stepsToReproduce,
+      severity: report.severity,
+      status: report.status,
+      pageUrl: report.pageUrl,
+      userAgent: report.userAgent,
+      resolutionNote: report.resolutionNote,
+      resolvedAt: report.resolvedAt,
+      createdAt: report.createdAt,
+      workspace: report.workspace
+        ? { id: report.workspace.id, name: report.workspace.name }
+        : null,
+      // A report outlives its reporter's account, so the name may be gone.
+      reportedBy: report.reportedBy
+        ? {
+            id: report.reportedBy.id,
+            name: report.reportedBy.name,
+            email: report.reportedBy.email,
+            avatarUrl: report.reportedBy.avatarUrl,
+          }
+        : null,
+    };
+  }
+
+  /**
+   * The bug inbox, across every tenant, with the reporter and workspace
+   * resolved so a row is readable without a second request.
+   */
+  async listBugReports(options: { status?: BugReportStatus; limit?: number } = {}) {
+    const reports = await this.bugReportRepository.find({
+      where: options.status ? { status: options.status } : {},
+      relations: { workspace: true, reportedBy: true },
+      order: { createdAt: 'DESC' },
+      take: Math.min(Math.max(options.limit ?? 100, 1), 500),
+    });
+    return reports.map((report) => this.toBugReportView(report));
+  }
+
+  /**
+   * Triage one report.
+   *
+   * `resolvedAt` is derived from the status rather than accepted from the
+   * caller: it is the same fact said twice, and letting them disagree makes
+   * "when was this fixed" unanswerable. Moving a report back out of a closed
+   * state clears the stamp for the same reason.
+   */
+  async updateBugReport(
+    id: string,
+    changes: { status?: BugReportStatus; resolutionNote?: string | null },
+  ) {
+    const report = await this.bugReportRepository.findOne({
+      where: { id },
+      relations: { workspace: true, reportedBy: true },
+    });
+    if (!report) {
+      throw new NotFoundException(`Bug report ${id} not found`);
+    }
+
+    if (changes.status !== undefined) {
+      const closed =
+        changes.status === BugReportStatus.RESOLVED ||
+        changes.status === BugReportStatus.DISMISSED;
+      report.status = changes.status;
+      report.resolvedAt = closed ? (report.resolvedAt ?? new Date()) : null;
+    }
+    if (changes.resolutionNote !== undefined) {
+      report.resolutionNote = changes.resolutionNote;
+    }
+
+    // save() returns the entity without its relations re-attached, so the view
+    // is built from the row we already loaded them onto.
+    await this.bugReportRepository.save(report);
+    return this.toBugReportView(report);
+  }
+}
