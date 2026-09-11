@@ -94,6 +94,22 @@ services:
       - key: META_LOGIN_CONFIG_ID
         scope: RUN_TIME
         value: ""
+      # Who can reach /super-admin, the cross-tenant owner panel. Comma-separated
+      # and matched case-insensitively against the email Slack reports for the
+      # signed-in user, so an address here only works if it is one someone can
+      # actually sign in with.
+      #
+      # Empty means the panel is unreachable for everyone, which is the correct
+      # setting for any deployment that is not the owner's — and the reason this
+      # must be set here rather than left to the dashboard: nothing errors when
+      # it is missing, the Super Admin nav entry simply never appears.
+      #
+      # Deliberately not a SECRET. It grants access to every customer's data, so
+      # it is worth more as a line in this file that shows up in review than as a
+      # value only visible to whoever opens the DO dashboard.
+      - key: SUPER_ADMIN_EMAILS
+        scope: RUN_TIME
+        value: abaid.ullah.hu@gmail.com
       # ---- Secrets: replace the placeholder values in the DO dashboard ----
       - key: JWT_SECRET
         scope: RUN_TIME
