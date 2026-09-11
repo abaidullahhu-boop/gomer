@@ -13,7 +13,7 @@ export const GET_WORKSPACE_STATS = 'get_workspace_stats';
 export const GET_WORKSPACE_STATS_TOOL: ToolSpec = {
   name: GET_WORKSPACE_STATS,
   description:
-    'Get a full report of THIS workspace: total members, how many have signed up to Zundy vs not, ' +
+    'Get a full report of THIS workspace: total members, how many have signed up to Gaspo vs not, ' +
     'and every connected app account with who connected it and its label. Use this for questions like ' +
     '"how many members are in this workspace?", "who has connected what?", or "how many people have ' +
     'attached their Slack?". This reads workspace data directly; it is not a connected-app integration.\n' +

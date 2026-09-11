@@ -1,5 +1,5 @@
 /**
- * Canned proactive messages Zundy sends unprompted — the onboarding intro a new
+ * Canned proactive messages Gaspo sends unprompted — the onboarding intro a new
  * member (or the installer) receives. Written in Slack mrkdwn (single-asterisk
  * bold, `_italics_`, `• ` bullets), not Markdown.
  */
@@ -12,7 +12,7 @@ function firstName(name: string | null | undefined): string {
 }
 
 /**
- * The intro DM Zundy sends when it first meets someone — on install (to the
+ * The intro DM Gaspo sends when it first meets someone — on install (to the
  * installer) and when a new member joins the workspace. `isInstaller` adds a
  * line about the daily check-in that only the installing admin needs to know.
  */
@@ -21,10 +21,10 @@ export function buildWelcomeMessage(
   options: { isInstaller?: boolean } = {},
 ): string {
   const lines = [
-    `Hi ${firstName(name)} :wave:, great to meet you. I'm *Zundy*, your new AI coworker. Here are three ways to work with me:`,
+    `Hi ${firstName(name)} :wave:, great to meet you. I'm *Gaspo*, your new AI coworker. Here are three ways to work with me:`,
     '',
     ':speech_balloon: *DM me here* — just message me like a coworker. Research, analysis, reports, automation — anything.',
-    ":mega: *@Zundy in any channel* — mention me in context and I'll jump in with the full thread as background.",
+    ":mega: *@Gaspo in any channel* — mention me in context and I'll jump in with the full thread as background.",
     ":electric_plug: *I connect to 3000+ tools* — Gmail, GitHub, Stripe, HubSpot, Google Ads, and more. Just tell me what you need and I'll figure out access.",
     '',
     'Try one now — just reply here:',
@@ -57,8 +57,8 @@ export const CANCEL_ACTION_ID = 'gomer_cancel';
 export type SlackBlock = Record<string, unknown>;
 
 /**
- * The approval card shown under a reply when Zundy wants to take a gated write
- * action (e.g. a Meta Ads change). `text` is Zundy's mrkdwn description of what
+ * The approval card shown under a reply when Gaspo wants to take a gated write
+ * action (e.g. a Meta Ads change). `text` is Gaspo's mrkdwn description of what
  * it will do; `token` identifies the pending action for the button callback.
  */
 export function buildApprovalBlocks(text: string, token: string, label: string): SlackBlock[] {

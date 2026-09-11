@@ -1,6 +1,6 @@
 /**
  * The declarative app spec a Space is built from. This is the entire contract
- * between Zundy (which emits a spec) and the runtime (which renders it). The
+ * between Gaspo (which emits a spec) and the runtime (which renders it). The
  * surface is deliberately small — CRUD forms, tables, and simple dashboards —
  * so a spec is safe to render generically without ever executing generated code.
  */

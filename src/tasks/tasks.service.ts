@@ -221,7 +221,7 @@ export class TasksService {
     const task = this.taskRepository.create({
       workspaceId,
       name: SYSTEM_CHECK_IN_NAME,
-      description: 'Zundy reviews the workspace and proposes ways it can help.',
+      description: 'Gaspo reviews the workspace and proposes ways it can help.',
       prompt: SYSTEM_CHECK_IN_PROMPT,
       cronExpression: SYSTEM_CHECK_IN_CRON,
       timezone: null,

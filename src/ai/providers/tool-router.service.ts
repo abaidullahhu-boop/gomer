@@ -71,7 +71,7 @@ const SERVER_ROUTER_SYSTEM_PROMPT =
 /**
  * Picks which bridged tools are worth sending for a given message.
  *
- * Zundy sends every tool schema on every turn, so a workspace with many
+ * Gaspo sends every tool schema on every turn, so a workspace with many
  * connected apps spends tens of thousands of tokens describing tools the current
  * message will never touch. A cheap pre-pass — the model sees only tool *names*
  * and short descriptions, not their full schemas — narrows that to the relevant
@@ -266,7 +266,7 @@ export class ToolRouterService {
 
     // Unlike tool routing, an explicitly empty answer is trusted rather than
     // treated as a failure. It is both the most common case and the most
-    // valuable one: anything Zundy answers with local tools alone (most Meta Ads
+    // valuable one: anything Gaspo answers with local tools alone (most Meta Ads
     // work) needs no connector, and attaching none is the largest saving there
     // is. The prompt asks for `[]` in exactly this case, which is what separates
     // it from a reply we simply could not read.

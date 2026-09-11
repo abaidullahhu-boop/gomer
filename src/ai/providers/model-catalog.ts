@@ -1,7 +1,7 @@
 import { Logger } from '@nestjs/common';
 
 /**
- * The models Zundy can run on, and what they cost.
+ * The models Gaspo can run on, and what they cost.
  *
  * This is the single source of truth for the settings picker, provider routing,
  * and credit pricing — the SPA renders whatever this serves, so a model can
@@ -33,7 +33,7 @@ export interface ModelDefinition {
   costInputPricePerMillion?: number;
   costOutputPricePerMillion?: number;
   /**
-   * Whether the model can call tools. Zundy is entirely tool-driven, so a model
+   * Whether the model can call tools. Gaspo is entirely tool-driven, so a model
    * without this cannot run it and is never offered in settings.
    */
   supportsTools: boolean;
@@ -164,7 +164,7 @@ function parseGatewayModels(raw: string): ModelDefinition[] {
       provider: 'gateway',
       inputPricePerMillion: Number(entry.inputPricePerMillion) || 0,
       outputPricePerMillion: Number(entry.outputPricePerMillion) || 0,
-      // Zundy is tool-driven end to end, so a model is only usable if it does
+      // Gaspo is tool-driven end to end, so a model is only usable if it does
       // function calling. Opt in explicitly — many cheap models advertise it
       // and then ignore the tools.
       supportsTools: entry.supportsTools ?? false,

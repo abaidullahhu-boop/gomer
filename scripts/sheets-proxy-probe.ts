@@ -78,7 +78,7 @@ async function main(): Promise<void> {
       ...target,
       url: SHEETS_BASE,
       body: {
-        properties: { title: `Zundy proxy probe ${new Date().toISOString()}` },
+        properties: { title: `Gaspo proxy probe ${new Date().toISOString()}` },
         sheets: [{ properties: { title: 'Probe' } }],
       },
     }),

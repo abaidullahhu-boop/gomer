@@ -147,7 +147,7 @@ export class BillingService {
       success_url: `${billingPage}?subscription=success`,
       cancel_url: `${billingPage}?subscription=cancelled`,
       'line_items[0][price_data][currency]': 'usd',
-      'line_items[0][price_data][product_data][name]': `Zundy ${plan.label} plan`,
+      'line_items[0][price_data][product_data][name]': `Gaspo ${plan.label} plan`,
       'line_items[0][price_data][unit_amount]': String(plan.priceCents),
       'line_items[0][price_data][recurring][interval]': 'month',
       'line_items[0][quantity]': '1',
@@ -175,7 +175,7 @@ export class BillingService {
    * Deliberately not a bespoke cancel button. The portal covers updating a
    * failed card, cancelling, resuming, and downloading invoices — and the card
    * case is the one that matters most: a `past_due` workspace currently has no
-   * way to fix its payment method anywhere in Zundy, so the subscription simply
+   * way to fix its payment method anywhere in Gaspo, so the subscription simply
    * dies. Rebuilding that flow means holding card details ourselves, which is a
    * different compliance question entirely.
    *
@@ -242,7 +242,7 @@ export class BillingService {
       success_url: `${billingPage}?topup=success`,
       cancel_url: `${billingPage}?topup=cancelled`,
       'line_items[0][price_data][currency]': 'usd',
-      'line_items[0][price_data][product_data][name]': `Zundy credits — ${pack.label}`,
+      'line_items[0][price_data][product_data][name]': `Gaspo credits — ${pack.label}`,
       'line_items[0][price_data][unit_amount]': String(pack.amountCents),
       'line_items[0][quantity]': '1',
       'metadata[workspaceId]': workspaceId,

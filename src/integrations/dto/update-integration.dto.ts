@@ -17,7 +17,7 @@ export class UpdateIntegrationDto {
   @IsIn(['team', 'private'])
   accessLevel?: IntegrationAccessLevel;
 
-  /** Whether Zundy may use this connection in runs. */
+  /** Whether Gaspo may use this connection in runs. */
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;
