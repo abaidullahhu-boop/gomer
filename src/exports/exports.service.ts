@@ -69,7 +69,7 @@ export interface ExportRunReport {
 }
 
 /**
- * Google Sheets export automation: writes Gomer's own reporting data (verified
+ * Google Sheets export automation: writes Zundy's own reporting data (verified
  * ROAS, campaign performance, rule-engine actions) into a spreadsheet, either
  * once on request or on a recurring schedule.
  *
@@ -394,7 +394,7 @@ export class ExportsService {
   }
 
   private defaultTitle(dataset: ExportDataset): string {
-    return `Gomer — ${this.defaultSheetTitle(dataset)}`;
+    return `Zundy — ${this.defaultSheetTitle(dataset)}`;
   }
 
   private defaultSheetTitle(dataset: ExportDataset): string {

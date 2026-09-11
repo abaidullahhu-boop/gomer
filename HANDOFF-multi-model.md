@@ -1,4 +1,4 @@
-# Handoff — multi-model support (Gomer)
+# Handoff — multi-model support (Zundy)
 
 Written 2026-07-22. Picks up a session that ran out of context.
 Plan file: `/home/abaid/.claude/plans/bubbly-strolling-robin.md`
@@ -7,7 +7,7 @@ Plan file: `/home/abaid/.claude/plans/bubbly-strolling-robin.md`
 
 ## Why this work exists
 
-The workspace's Anthropic key is **out of credits**, so every AI run fails. Gomer was
+The workspace's Anthropic key is **out of credits**, so every AI run fails. Zundy was
 hard-wired to one key and one model (`AI_MODEL` env var) with no way to switch without
 a redeploy. The goal: a workspace admin picks a model in Settings → it persists, drives
 interactive and scheduled runs, is billed at its own rate, and keeps working with
@@ -66,7 +66,7 @@ bridge is regression risk for no user-visible gain. Two tool paths is a delibera
 its MCP blocks have no neutral equivalent, so assistant turns replay byte-identical.
 
 **Gateway models are config-declared, not hardcoded.** Inventing model ids → 404s;
-inventing prices → mis-billing. `supportsTools` defaults to **false** — Gomer is 100%
+inventing prices → mis-billing. `supportsTools` defaults to **false** — Zundy is 100%
 tool-driven, so a model that ignores tool calls fails every single request. Never flip it
 to `true` on a vendor claim; tool-test first.
 
@@ -105,7 +105,7 @@ credit math verified against `dist/` (opus 2.5/12.5, fable 5/25, sonnet 1.5/7.5,
 - **The MCP bridge has never connected to a real Pipedream server.**
 - Bridge-failure fallback, settings persistence round-trip, and pinned-model-survives-
   default-change are all untested.
-- No full Gomer run has completed on a gateway model — only the raw provider call below.
+- No full Zundy run has completed on a gateway model — only the raw provider call below.
 
 **Verified 2026-07-22 (gateway path only):** the OpenAI SDK, configured exactly as
 `GatewayProvider` configures it, made a live call to OmniRoute with a tool array and got
@@ -143,7 +143,7 @@ Catalog by owner:
 | `auggie` | 15 | `aug/claude-sonnet-4.6`, `aug/claude-opus-4.6`, `aug/gemini-3.1-pro`, `aug/gpt-5.5-high` |
 | `opencode` | 8 | `oc/deepseek-v4-flash-free`, `oc/minimax-m3-free` |
 | `duckduckgo-web` | 6 | `ddgw/gpt-4o-mini`, `ddgw/claude-3-5-haiku-20241022` |
-| `veoaifree-web` | 6 | video models — irrelevant to Gomer |
+| `veoaifree-web` | 6 | video models — irrelevant to Zundy |
 | `chipotle`, `mimocode` | 2 | `pepper/pepper-1`, `mcode/mimo-auto` |
 
 The models advertise `capabilities.tool_calling: true`. **Treat that as a claim, not a
@@ -209,7 +209,7 @@ nvm exec 20 npm uninstall -g omniroute   # reclaim 1.5 GB
 
 The user's message "omini route vs anthropic whats the difference and" trailed off
 mid-sentence. They were asked what else to compare (cost, reliability, or behaviour in
-Gomer) and never answered.
+Zundy) and never answered.
 
 ## Untracked but unrelated
 

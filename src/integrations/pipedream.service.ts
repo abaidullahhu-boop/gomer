@@ -74,7 +74,7 @@ export interface AppTool {
  * connect tokens, reading/removing a workspace's connected accounts, and
  * proxying the app catalogue.
  *
- * The `external_user_id` we pass to Pipedream is the gomer workspace id for
+ * The `external_user_id` we pass to Pipedream is the zundy workspace id for
  * `team` accounts (shared by every member) and a per-user namespace for
  * `private` accounts (see {@link PipedreamService.privateExternalUserId}), so
  * access isolation holds at the Pipedream boundary, not just in our queries.
@@ -261,7 +261,7 @@ export class PipedreamService implements OnModuleInit {
 
   /**
    * Every action an app exposes. These are the same components Pipedream's
-   * remote MCP server turns into tools, so this answers "what can Gomer do with
+   * remote MCP server turns into tools, so this answers "what can Zundy do with
    * this app?" for the UI.
    *
    * Pages are followed here rather than by the caller: the UI wants the whole

@@ -262,7 +262,7 @@ export class McpBridgeService {
         ? { headers: { Authorization: `Bearer ${server.authorizationToken}` } }
         : undefined,
     });
-    const client = new Client({ name: 'gomer', version: '1.0.0' });
+    const client = new Client({ name: 'zundy', version: '1.0.0' });
     await client.connect(transport);
     return client;
   }

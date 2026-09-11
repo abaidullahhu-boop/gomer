@@ -27,7 +27,7 @@ const ALLOWED = (
 ).split(',');
 
 const SYSTEM =
-  'You are Gomer, an AI assistant for a workspace. Use the available tools to answer.';
+  'You are Zundy, an AI assistant for a workspace. Use the available tools to answer.';
 const PROMPT = 'List my Google Ads accounts.';
 
 async function usageFor(

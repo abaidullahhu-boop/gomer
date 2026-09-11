@@ -17,7 +17,7 @@ export class UpdateIntegrationDto {
   @IsIn(['team', 'private'])
   accessLevel?: IntegrationAccessLevel;
 
-  /** Whether Gomer may use this connection in runs. */
+  /** Whether Zundy may use this connection in runs. */
   @IsOptional()
   @IsBoolean()
   isActive?: boolean;

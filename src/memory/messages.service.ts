@@ -17,7 +17,7 @@ const HISTORY_TURN_LIMIT = 20;
 const TURN_CHAR_LIMIT = 4000;
 
 /**
- * Persists conversation turns and reads them back as run history, giving Gomer
+ * Persists conversation turns and reads them back as run history, giving Zundy
  * continuity within a thread. Writes are best-effort — losing a turn must never
  * fail the reply it belongs to — so failures are logged, not thrown.
  */

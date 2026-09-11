@@ -119,7 +119,7 @@ Slack messages, scheduled tasks, and rules alike.
 
 Two ways to show it, in order of preference:
 
-1. **Low-balance nudge** — on a workspace under $10 of credits, Gomer appends a
+1. **Low-balance nudge** — on a workspace under $10 of credits, Zundy appends a
    "heads up, about $X left" line to its normal answer. Show a normal question
    getting a normal answer *plus* the nudge. **This is live right now** at $8.70;
    nothing needs staging.
@@ -129,7 +129,7 @@ Two ways to show it, in order of preference:
    > (`LOW_BALANCE_NUDGE_TTL_SECONDS`), so it fires *once* per thread. A thread
    > you tested in will answer normally with no nudge, and you will think the
    > feature is broken. A fresh thread is a fresh key.
-2. **Hard stop** — on a workspace at zero, Gomer declines and links the billing
+2. **Hard stop** — on a workspace at zero, Zundy declines and links the billing
    page instead of calling a model at all.
 
 To stage the hard stop on a throwaway workspace, spend the balance down rather

@@ -5,7 +5,7 @@ import type { ToolSpec } from './providers/provider.interface';
  * AiService against {@link ExportsService} — the same dispatch mechanism as the
  * Meta Ads tools. Offered only when a Google Sheets account is connected.
  *
- * These write Gomer's OWN reporting data (verified ROAS, campaign performance,
+ * These write Zundy's OWN reporting data (verified ROAS, campaign performance,
  * rule-engine actions) with a fixed column layout, which is why they exist
  * alongside Pipedream's generic Google Sheets MCP actions: the layout is stable
  * across runs, a schedule can run one with no model in the loop, and repeat runs
@@ -51,7 +51,7 @@ const DESTINATION_PROPERTIES = {
 const EXPORT_TO_SHEET_TOOL: ToolSpec = {
   name: EXPORT_TO_SHEET,
   description:
-    "Export one of Gomer's reporting datasets to a Google Sheet NOW, with a fixed column " +
+    "Export one of Zundy's reporting datasets to a Google Sheet NOW, with a fixed column " +
     'layout. Use for "put our ROAS history in a spreadsheet", "export last month\'s campaign ' +
     'numbers", or any one-off report request. Creates the spreadsheet when none is given and ' +
     'appends beneath existing rows otherwise. Returns the spreadsheet URL — always give it to ' +
