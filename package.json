@@ -1,8 +1,8 @@
 {
-  "name": "zundy-backend",
+  "name": "gaspo-backend",
   "version": "0.1.0",
-  "description": "Zundy — AI coworker platform backend (NestJS)",
-  "author": "Zundy",
+  "description": "Gaspo — AI coworker platform backend (NestJS)",
+  "author": "Gaspo",
   "private": true,
   "license": "UNLICENSED",
   "scripts": {

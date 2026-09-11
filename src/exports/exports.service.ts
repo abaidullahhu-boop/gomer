@@ -69,7 +69,7 @@ export interface ExportRunReport {
 }
 
 /**
- * Google Sheets export automation: writes Zundy's own reporting data (verified
+ * Google Sheets export automation: writes Gaspo's own reporting data (verified
  * ROAS, campaign performance, rule-engine actions) into a spreadsheet, either
  * once on request or on a recurring schedule.
  *
@@ -394,7 +394,7 @@ export class ExportsService {
   }
 
   private defaultTitle(dataset: ExportDataset): string {
-    return `Zundy — ${this.defaultSheetTitle(dataset)}`;
+    return `Gaspo — ${this.defaultSheetTitle(dataset)}`;
   }
 
   private defaultSheetTitle(dataset: ExportDataset): string {

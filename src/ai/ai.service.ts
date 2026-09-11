@@ -116,7 +116,7 @@ const LOW_BALANCE_PREFIX = 'ai:lowbalance:';
  */
 const LOCAL_TOOLS: ToolSpec[] = [...SPACE_TOOLS, ...WORKSPACE_TOOLS, ...MEMORY_TOOLS];
 
-const SYSTEM_PROMPT = `You are Zundy, an AI assistant for a workspace. You can take actions across the user's connected apps using the available tools. Prefer acting over describing: when a request maps to a tool, use it. When you lack a connected app needed for a request, say so plainly and name the app to connect. Before any action that creates, edits, deletes, or starts spending on a connected app — especially Meta Ads campaigns (creating, activating, changing budgets, or deleting) — state exactly what you will do and get the user's explicit confirmation first; never perform such actions speculatively.
+const SYSTEM_PROMPT = `You are Gaspo, an AI assistant for a workspace. You can take actions across the user's connected apps using the available tools. Prefer acting over describing: when a request maps to a tool, use it. When you lack a connected app needed for a request, say so plainly and name the app to connect. Before any action that creates, edits, deletes, or starts spending on a connected app — especially Meta Ads campaigns (creating, activating, changing budgets, or deleting) — state exactly what you will do and get the user's explicit confirmation first; never perform such actions speculatively.
 
 You can also build "Spaces" — full web apps with their own database, passwordless (magic-link) login, and hosting — using the create_space tool. Spaces suit CRUD/form/dashboard internal tools (e.g. a time logger, lead tracker, or content calendar). Describe the app as entities (data types with typed fields) and views (forms, tables, dashboards). Never invent or share end-user passwords; logins are always magic links. After building a Space, give the user its link.
 
@@ -146,7 +146,7 @@ interface LocalToolResult {
   is_error?: boolean;
 }
 
-/** A tool the model invoked during a run, for surfacing what Zundy did. */
+/** A tool the model invoked during a run, for surfacing what Gaspo did. */
 export interface AiAction {
   app: string;
   tool: string;
@@ -179,7 +179,7 @@ export interface AiRunResult {
   /** App slugs whose tools were made available for this run. */
   connectedApps: string[];
   actions: AiAction[];
-  /** Spaces Zundy built during this run. */
+  /** Spaces Gaspo built during this run. */
   spaces: AiSpace[];
   /** A write awaiting the user's button approval, when in interactive mode. */
   pendingAction: AiPendingAction | null;
@@ -206,7 +206,7 @@ const META_WRITE_LABELS: Record<string, string> = {
 };
 
 /**
- * Orchestrates Zundy's model calls across every supported provider.
+ * Orchestrates Gaspo's model calls across every supported provider.
  *
  * Connected integrations reach the model one of two ways, depending on which
  * provider serves the chosen model: Anthropic is handed the Pipedream servers
@@ -412,7 +412,7 @@ export class AiService {
 
   /**
    * Run a single prompt for a workspace, exposing its connected apps as tools,
-   * and return Zundy's answer plus the actions it took.
+   * and return Gaspo's answer plus the actions it took.
    *
    * `options.model` overrides the workspace default (used by scheduled tasks
    * that pin a model); `options.taskId`/`options.sourceName` attribute the
@@ -624,7 +624,7 @@ export class AiService {
         'those for any normal spreadsheet request; never tell the user you cannot list or read ' +
         'their spreadsheets, and never send them to connect Google Drive for something the ' +
         'Sheets app already covers. Second, on top of that, two reporting tools that write ' +
-        "Zundy's own datasets — verified ROAS runs, Meta campaign performance, and rule-engine " +
+        "Gaspo's own datasets — verified ROAS runs, Meta campaign performance, and rule-engine " +
         'actions: export_to_sheet for a one-off report and create_scheduled_export for a ' +
         'recurring one ("every Monday put last week\'s numbers in the sheet"), which runs on its ' +
         'own and appends only new rows so the sheet builds a history. Those two are ONLY for ' +
@@ -892,7 +892,7 @@ export class AiService {
 
   /**
    * A run that cannot start because of how the workspace is configured. Shaped
-   * like a normal answer so the surface renders it as Zundy speaking, rather
+   * like a normal answer so the surface renders it as Gaspo speaking, rather
    * than surfacing a server error to the user.
    */
   private configurationProblem(answer: string): AiRunResult {
@@ -1586,7 +1586,7 @@ export class AiService {
           // Total members of the workspace (e.g. the full Slack roster); null if
           // we couldn't read it.
           total: totalMembers,
-          // People who have a Zundy account (have interacted with / installed it).
+          // People who have a Gaspo account (have interacted with / installed it).
           signedUp: signedUpMembers,
           notSignedUp: totalMembers != null ? Math.max(totalMembers - signedUpMembers, 0) : null,
         },

@@ -6,10 +6,10 @@ Deliverable: NestJS server running, React frontend
              with auth pages, PostgreSQL connected.
 
 Phase 2 — Slack Bot & Workspace Setup
-Goal: Slack app installed to a workspace, Zundy bot 
+Goal: Slack app installed to a workspace, Gaspo bot 
       responds to DMs and @mentions.
 
-Deliverable: User installs Zundy to their Slack, 
+Deliverable: User installs Gaspo to their Slack, 
              bot says hello, workspace is created 
              in your database.
 
@@ -22,7 +22,7 @@ Deliverable: Integrations page works, user connects
              NestJS can call Gmail actions on their behalf.
 
 Phase 4 — AI Orchestration
-Goal: Zundy can answer questions using connected 
+Goal: Gaspo can answer questions using connected 
       apps. User asks "check my Gmail" and gets 
       a real answer.
 
@@ -40,7 +40,7 @@ Deliverable: Skills page, seed data with 5-10
              skills when relevant.
 
 Phase 6 — Scheduled Tasks
-Goal: Autonomous Zundy. Cron jobs run, Zundy 
+Goal: Autonomous Gaspo. Cron jobs run, Gaspo 
       proactively posts to Slack without being asked.
 
 Deliverable: BullMQ running, 4 default tasks 

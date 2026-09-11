@@ -24,7 +24,7 @@ export class WorkspacesController {
   }
 
   /**
-   * Update the workspace's Zundy settings. Admin-only: these change behaviour
+   * Update the workspace's Gaspo settings. Admin-only: these change behaviour
    * and spend for everyone in the workspace, not just the caller.
    */
   @Patch('me')
@@ -43,7 +43,7 @@ export class WorkspacesController {
       if (!model) {
         throw new BadRequestException(`Unknown model: ${dto.defaultModel}`);
       }
-      // Zundy drives everything through tools, so a model that cannot call them
+      // Gaspo drives everything through tools, so a model that cannot call them
       // would fail on every request rather than merely performing worse.
       if (!model.supportsTools) {
         throw new BadRequestException(`${model.name} does not support tool use`);

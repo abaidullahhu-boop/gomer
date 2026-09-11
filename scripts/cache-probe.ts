@@ -14,7 +14,7 @@ const MCP_BETA = 'mcp-client-2025-11-20';
 const CACHE = { type: 'ephemeral' as const, ttl: CACHE_TTL };
 
 // Stand-in for the real system prompt; padded past the 1024-token minimum.
-const SYSTEM = `You are Zundy, an AI assistant for a workspace. You can take actions across the user's connected apps using the available tools. Prefer acting over describing: when a request maps to a tool, use it.\n\n${'Operational guidance for campaign management, budgets, and reporting. '.repeat(120)}`;
+const SYSTEM = `You are Gaspo, an AI assistant for a workspace. You can take actions across the user's connected apps using the available tools. Prefer acting over describing: when a request maps to a tool, use it.\n\n${'Operational guidance for campaign management, budgets, and reporting. '.repeat(120)}`;
 
 // Stand-in for the local toolset, so `tools` is non-trivial like the real one.
 const tools = Array.from({ length: 12 }, (_, i) => ({

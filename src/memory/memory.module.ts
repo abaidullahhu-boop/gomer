@@ -6,7 +6,7 @@ import { WorkspaceMemoryService } from './workspace-memory.service';
 import { MemoryController } from './memory.controller';
 
 /**
- * Zundy's memory layer: per-thread conversation history ({@link MessagesService})
+ * Gaspo's memory layer: per-thread conversation history ({@link MessagesService})
  * and durable cross-conversation workspace facts ({@link WorkspaceMemoryService}).
  */
 @Module({

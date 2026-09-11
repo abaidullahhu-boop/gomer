@@ -52,7 +52,7 @@ interface SpreadsheetMeta {
 
 /**
  * A thin client for the Google Sheets API v4, used by the export automation to
- * write Zundy's own reporting data into a spreadsheet. Stateless in the same way
+ * write Gaspo's own reporting data into a spreadsheet. Stateless in the same way
  * as {@link MetaAdsService} and {@link StripeService}: the caller passes the
  * {@link SheetsCredential} resolved from the workspace's connected account.
  *
@@ -90,7 +90,7 @@ export class SheetsService {
     if (!spreadsheetId) {
       const created = await this.createSpreadsheet(
         credential,
-        destination.spreadsheetTitle?.trim() || 'Zundy export',
+        destination.spreadsheetTitle?.trim() || 'Gaspo export',
         destination.sheetTitle,
       );
       spreadsheetId = created.spreadsheetId;

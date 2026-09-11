@@ -82,7 +82,7 @@ Dashboard → **Integrations** → search **Google Sheets** → **Connect**.
 
 > **Set it to Team (shared), not Private.** A private connection is visible only
 > to the member who made it, and the Slack account you demo from is a different
-> member — a private connection would leave Zundy answering "Google Sheets isn't
+> member — a private connection would leave Gaspo answering "Google Sheets isn't
 > connected" on camera. Same scoping trap as the Gmail incident.
 
 **Grant write access on the Google consent screen.** A read-only grant fails at
@@ -118,7 +118,7 @@ domain, so do not substitute it for `google_sheets`.)
 ## Step 2 — Drive it from Slack
 
 **Start a brand-new thread.** An old thread carries conversation memory of
-earlier campaigns and Zundy will reference things that no longer exist.
+earlier campaigns and Gaspo will reference things that no longer exist.
 
 Send these one at a time, waiting for each reply:
 
@@ -127,10 +127,10 @@ Send these one at a time, waiting for each reply:
 | 1 | `our target ROAS is 3` | **Memory write.** Saved silently as a durable fact — no "I've noted that" theatre. |
 | 2 | `what do you remember about us?` | Reads the fact back, proving it persisted rather than living in the thread. |
 | 3 | `export last week's campaign performance to a spreadsheet` | **The headline.** Creates the sheet, writes the header contract, returns a link. Open it on camera — and say up front that the connected ad account has no delivered spend, so the rows are empty by construction, not by failure. |
-| 4 | `every Monday at 8am put last week's campaign performance in that same sheet` | Recurring export created. Zundy should confirm the terms first and reuse the spreadsheet from message 3 rather than making a second one. |
+| 4 | `every Monday at 8am put last week's campaign performance in that same sheet` | Recurring export created. Gaspo should confirm the terms first and reuse the spreadsheet from message 3 rather than making a second one. |
 | 5 | `run that export now` | Runs it off-schedule so the write happens live instead of waiting until Monday. |
 | 6 | `what reports are running?` | Lists the schedule, destination, last run, and row count. |
-| 7 | `every night at 2am pause any campaign whose CPA over the last 3 days is above 40` | **Rule engine.** Zundy states metric/threshold/window/action/schedule/guardrails and asks for confirmation. |
+| 7 | `every night at 2am pause any campaign whose CPA over the last 3 days is above 40` | **Rule engine.** Gaspo states metric/threshold/window/action/schedule/guardrails and asks for confirmation. |
 | 8 | `yes` | Rule created. |
 
 > **Do not send a verified-ROAS question.** `what's our real ROAS…` throws
@@ -143,7 +143,7 @@ Send these one at a time, waiting for each reply:
 - **Don't demo a Google Ads write.** Approval gating is Meta-only
   (`META_ADS_WRITE_TOOL_NAMES` in `ai.service.ts`) — unchanged from Milestone 3.
 - **Don't ask for an export in a thread where Sheets isn't connected.** The tools
-  are only offered when the workspace has a Google Sheets connection, so Zundy
+  are only offered when the workspace has a Google Sheets connection, so Gaspo
   will correctly say it can't — accurate, but not the shot you want.
 
 ---
@@ -159,7 +159,7 @@ campaigns are all paused and have never delivered, so Meta returns no insight
 rows and the tab is headers only. That is the documented contract, not a
 failure — `export-tables.spec.ts` pins "an empty dataset still carries its header
 contract" precisely so a quiet window produces a valid sheet instead of a broken
-one. Show the row count Zundy reports back (0) and the `lastRowCount` column in
+one. Show the row count Gaspo reports back (0) and the `lastRowCount` column in
 Step 4; the honest version of this beat is stronger than a surprised one.
 
 Two points worth making out loud regardless:
@@ -233,7 +233,7 @@ each side is missing and is the fastest way to confirm once they do.
 | `insufficient authentication scopes` | Read-only Google grant | Revoke at myaccount.google.com/permissions, reconnect, grant write |
 | `Domain … is not allowed for this app` | Pipedream won't proxy to Sheets for this app | Not fixable mid-demo — exports have no other path. Stop, raise it with Pipedream, re-record. `npm run probe:sheets` catches this beforehand. |
 | Export tools missing entirely | Deploy didn't land | Check the deployed commit; re-record after it does |
-| Second spreadsheet created on message 4 | Sheet id wasn't remembered | Name the spreadsheet id explicitly, or ask Zundy to remember it first |
+| Second spreadsheet created on message 4 | Sheet id wasn't remembered | Name the spreadsheet id explicitly, or ask Gaspo to remember it first |
 | Rule confirmation never appears | Meta connection missing/expired | Reconnect Meta |
 | `No active Stripe connection is available.` | You asked a verified-ROAS question | Expected in production — Stripe is not connected. Do not send that question; cover it via Step 5 |
 | Export sheet has headers but no rows | Ad account has no delivered spend | Expected — see Step 3. Not a failure; state it before opening the sheet |
@@ -249,7 +249,7 @@ were the frontend), so that was consistent with the plan.
 **Resolved in Week 6:** the dashboard's **Automations** page now reports all four
 — rules with their recent activity, scheduled reports, remembered facts, and
 verified-ROAS history. It is deliberately **read-only**: creating a rule
-conversationally makes Zundy state the metric, threshold, window, action and
+conversationally makes Gaspo state the metric, threshold, window, action and
 guardrails and ask for confirmation, which a form would reproduce worse. So the
 demo above is still the way to *create* these; the page is where you show what is
 running afterwards.
