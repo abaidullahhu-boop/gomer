@@ -14,7 +14,7 @@ import { SlackInteractionsService } from './slack-interactions.service';
 import { SlackService } from './slack.service';
 
 /**
- * Emoji reacted onto the user's message while Gomer works, then removed once the
+ * Emoji reacted onto the user's message while Zundy works, then removed once the
  * answer is posted. A bare Slack emoji name (no colons) — swap for a custom
  * workspace spinner (e.g. 'loading') if one is installed.
  */
@@ -56,7 +56,7 @@ export function conversationKeys(
 }
 
 /**
- * Turns inbound Slack messages into Gomer runs. An @-mention in a channel or a
+ * Turns inbound Slack messages into Zundy runs. An @-mention in a channel or a
  * DM to the bot is treated as a prompt: we resolve the sender to a workspace
  * member (so their connected apps are available), run it through {@link AiService},
  * and post the answer back in-thread. Processing is fire-and-forget — the
@@ -183,7 +183,7 @@ export class SlackEventsService {
 
       const answer = result.answer || "I couldn't come up with a response to that.";
 
-      // Record Gomer's side of the turn so follow-ups in this thread see it, and
+      // Record Zundy's side of the turn so follow-ups in this thread see it, and
       // in the thread this answer opens, which is where the follow-up will land.
       for (const threadId of [memoryThreadId, branchThreadId]) {
         if (!threadId || !result.answer) continue;
@@ -196,7 +196,7 @@ export class SlackEventsService {
         );
       }
 
-      // A gated write is pending: post Gomer's description with Approve/Cancel
+      // A gated write is pending: post Zundy's description with Approve/Cancel
       // buttons and stash the action for the interaction callback. Requires a
       // known requester (to gate who can approve); otherwise fall back to text.
       if (result.pendingAction && message.user) {
@@ -245,7 +245,7 @@ export class SlackEventsService {
   }
 
   /**
-   * Greet a newly joined member with an onboarding DM — Gomer "messaging first".
+   * Greet a newly joined member with an onboarding DM — Zundy "messaging first".
    * Best-effort: bots/deactivated joiners and workspaces we can't resolve are
    * skipped silently.
    */

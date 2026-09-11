@@ -37,7 +37,7 @@ async function bootstrap(): Promise<void> {
   // OpenAPI / Swagger docs — disabled in production.
   if (nodeEnv !== 'production') {
     const swaggerConfig = new DocumentBuilder()
-      .setTitle('gomer.ai API')
+      .setTitle('Zundy API')
       .setDescription('AI coworker platform backend API')
       .setVersion('0.1.0')
       .addBearerAuth({ type: 'http', scheme: 'bearer', bearerFormat: 'JWT' }, 'access-token')
@@ -65,7 +65,7 @@ async function bootstrap(): Promise<void> {
   app.enableShutdownHooks();
 
   await app.listen(port);
-  logger.log(`gomer.ai backend running on http://localhost:${port} [${nodeEnv}]`);
+  logger.log(`Zundy backend running on http://localhost:${port} [${nodeEnv}]`);
 }
 
 void bootstrap();

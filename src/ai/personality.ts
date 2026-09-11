@@ -1,5 +1,5 @@
 /**
- * The tones an admin can pick for Gomer, and how each one changes its voice.
+ * The tones an admin can pick for Zundy, and how each one changes its voice.
  *
  * Kept apart from AiService so the workspaces DTO can validate against the list
  * without importing the service (which imports WorkspacesService in turn).

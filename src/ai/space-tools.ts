@@ -1,7 +1,7 @@
 import type { ToolSpec } from './providers/provider.interface';
 
 /**
- * Local (client-side) tools that let Gomer build Spaces — spec-driven web apps.
+ * Local (client-side) tools that let Zundy build Spaces — spec-driven web apps.
  * Unlike the Pipedream MCP tools (executed server-side by the connector), these
  * are executed by AiService against SpacesService and their results fed back.
  *

@@ -1,7 +1,7 @@
 import type { ToolSpec } from './providers/provider.interface';
 
 /**
- * Local (client-side) tools for Gomer's durable workspace memory, executed by
+ * Local (client-side) tools for Zundy's durable workspace memory, executed by
  * AiService against {@link WorkspaceMemoryService} — the same dispatch mechanism
  * as the Spaces and workspace-stats tools. Saved facts persist across every
  * conversation in the workspace and are injected into each run's system prompt.

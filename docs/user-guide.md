@@ -1,20 +1,20 @@
-# Gomer — user guide
+# Zundy — user guide
 
-Gomer is an AI coworker for your ad operations. It lives in Slack, connects to
+Zundy is an AI coworker for your ad operations. It lives in Slack, connects to
 the accounts you already use, and can answer questions, make changes, send
 reports, and watch your accounts while you're not looking.
 
 You talk to it in plain English. There are no commands to memorise.
 
 - [Setting up](#setting-up)
-- [Talking to Gomer](#talking-to-gomer)
+- [Talking to Zundy](#talking-to-zundy)
 - [Asking about performance](#asking-about-performance)
 - [Real ROAS, verified against Stripe](#real-roas-verified-against-stripe)
 - [Making changes to campaigns](#making-changes-to-campaigns)
 - [Reports into Google Sheets](#reports-into-google-sheets)
 - [Rules that run without you](#rules-that-run-without-you)
 - [Alerts](#alerts)
-- [Teaching Gomer about your business](#teaching-gomer-about-your-business)
+- [Teaching Zundy about your business](#teaching-zundy-about-your-business)
 - [Scheduled check-ins](#scheduled-check-ins)
 - [The dashboard](#the-dashboard)
 - [Credits](#credits)
@@ -25,12 +25,12 @@ You talk to it in plain English. There are no commands to memorise.
 
 ## Setting up
 
-**1. Install Gomer into Slack.** From the dashboard, choose *Add to Slack* and
-approve the permissions. Gomer will send you a short intro message. Whoever
+**1. Install Zundy into Slack.** From the dashboard, choose *Add to Slack* and
+approve the permissions. Zundy will send you a short intro message. Whoever
 installs it becomes the workspace admin.
 
 **2. Connect your accounts.** Dashboard → **Integrations** → find the service →
-**Connect**. Sign in to that service as you normally would; Gomer never sees or
+**Connect**. Sign in to that service as you normally would; Zundy never sees or
 stores your password.
 
 For ad operations you'll want **Meta Ads**, **Google Ads**, **Stripe** (for
@@ -40,7 +40,7 @@ verified revenue), and **Google Sheets** (for reports).
 
 Every connection is either:
 
-- **Team (shared)** — everyone in your Slack workspace can use it through Gomer.
+- **Team (shared)** — everyone in your Slack workspace can use it through Zundy.
 - **Private** — only you can use it.
 
 Use **Team** for shared business accounts: the ad accounts, the company Stripe,
@@ -48,27 +48,27 @@ the reporting spreadsheet. Use **Private** for anything personal, like your own
 inbox.
 
 This trips people up constantly, in one specific way: if you connect an account
-as **Private** and then a colleague asks Gomer about it, Gomer will correctly say
+as **Private** and then a colleague asks Zundy about it, Zundy will correctly say
 that service isn't connected — because for them, it isn't. If you're sharing a
 screen or handing work between people, connect as **Team**.
 
 > When you connect Google Sheets, make sure you grant **write** access on
-> Google's consent screen. A read-only grant looks fine until Gomer tries to
+> Google's consent screen. A read-only grant looks fine until Zundy tries to
 > write your first report and fails.
 
 ---
 
-## Talking to Gomer
+## Talking to Zundy
 
-**DM it.** Message Gomer directly like a coworker. Best for anything you don't
+**DM it.** Message Zundy directly like a coworker. Best for anything you don't
 need the rest of the team to see.
 
-**@mention it in a channel.** Gomer reads the thread it's mentioned in, so you
+**@mention it in a channel.** Zundy reads the thread it's mentioned in, so you
 can pull it into a conversation already in progress and it will have the context.
 
 **Threads have memory.** Follow-up questions in the same thread work the way
 you'd expect — "and what about last week?" continues from what you were just
-discussing. Starting a *new* thread gives Gomer a clean slate, which is what you
+discussing. Starting a *new* thread gives Zundy a clean slate, which is what you
 want when you switch topics.
 
 ---
@@ -83,7 +83,7 @@ Just ask. Some things that work:
 - *compare this month to last month on Google Ads*
 - *why did spend jump on Tuesday?*
 
-Gomer pulls live numbers from the ad accounts you've connected. It will tell you
+Zundy pulls live numbers from the ad accounts you've connected. It will tell you
 the window it used, and it will say so when the data is too thin to draw a
 conclusion from rather than guessing.
 
@@ -99,25 +99,25 @@ With Stripe connected:
 
 - *what's our real ROAS for the last 7 days?*
 
-Gomer pairs ad spend with actual Stripe revenue and shows you the verified figure
+Zundy pairs ad spend with actual Stripe revenue and shows you the verified figure
 next to the platform's own claim.
 
 One honest limitation it will tell you about: Stripe revenue is **blended**. It
 includes money from customers who never saw an ad — organic, email, returning
 customers. So verified ROAS is a reality check on the platform's number, not a
-per-campaign attribution model. Gomer states this caveat rather than letting you
+per-campaign attribution model. Zundy states this caveat rather than letting you
 read the number as something it isn't.
 
 ---
 
 ## Making changes to campaigns
 
-Gomer can pause, resume, scale, adjust budgets and bids, and duplicate campaigns.
+Zundy can pause, resume, scale, adjust budgets and bids, and duplicate campaigns.
 
 - *pause the campaigns with a CPA over £40*
 - *increase the budget on the winning ad set by 20%*
 
-**Changes to Meta Ads always ask first.** Gomer describes exactly what it's about
+**Changes to Meta Ads always ask first.** Zundy describes exactly what it's about
 to do and shows **Approve** and **Cancel** buttons. Nothing happens until you
 press Approve. This is deliberate — it's your ad spend.
 
@@ -130,14 +130,14 @@ and rephrase; you don't need to undo anything.
 
 - *export our verified ROAS history to a spreadsheet*
 
-Gomer creates the sheet, writes the headers and rows, and gives you the link.
+Zundy creates the sheet, writes the headers and rows, and gives you the link.
 Numbers arrive as numbers, so they sort and chart in Sheets straight away.
 
 To make it recurring:
 
 - *every Monday at 8am put last week's campaign performance in that same sheet*
 
-Gomer confirms the schedule before creating it, and reuses the spreadsheet you
+Zundy confirms the schedule before creating it, and reuses the spreadsheet you
 already have rather than making a second one.
 
 Useful to know:
@@ -153,13 +153,13 @@ Useful to know:
 
 ## Rules that run without you
 
-A rule is a standing instruction Gomer checks on a schedule and acts on.
+A rule is a standing instruction Zundy checks on a schedule and acts on.
 
 - *every night at 2am pause any campaign whose CPA over the last 3 days is above 40*
 - *scale the ad sets with ROAS above 4 by 20% each morning*
 - *just tell me if spend on any account goes over 500 in a day — don't change anything*
 
-Gomer reads back the metric, threshold, window, action, schedule, and guardrails,
+Zundy reads back the metric, threshold, window, action, schedule, and guardrails,
 and asks you to confirm before the rule exists.
 
 A rule watches one measure — **spend, CPA, ROAS, verified ROAS, CTR or CPC** — at
@@ -172,14 +172,14 @@ depends on total Stripe revenue.)
 Ask *what rules are running?* at any time. Rules can be paused or deleted the
 same way you made them — just say so.
 
-Rules and one-off changes are different things. Asking Gomer to pause something
+Rules and one-off changes are different things. Asking Zundy to pause something
 pauses it once. A rule keeps checking, indefinitely, until you turn it off.
 
 ---
 
 ## Alerts
 
-Separate from rules, Gomer watches your Meta ad accounts every hour and speaks up
+Separate from rules, Zundy watches your Meta ad accounts every hour and speaks up
 when something looks wrong — without you configuring anything per-campaign.
 
 It reports:
@@ -203,9 +203,9 @@ attention. That's the system working.
 
 ---
 
-## Teaching Gomer about your business
+## Teaching Zundy about your business
 
-Tell Gomer things once and it remembers them across every future conversation.
+Tell Zundy things once and it remembers them across every future conversation.
 
 - *our target ROAS is 3*
 - *we don't run ads on weekends*
@@ -238,15 +238,15 @@ Slack is where the work happens; the dashboard is for setup and oversight.
 | Page | What it's for |
 | --- | --- |
 | **Integrations** | Connect and disconnect accounts, set Team or Private |
-| **Skills** | Install expertise packs — creative analysis, PMax audits, attribution diagnostics and similar — which Gomer draws on when relevant |
+| **Skills** | Install expertise packs — creative analysis, PMax audits, attribution diagnostics and similar — which Zundy draws on when relevant |
 | **Tasks** | Your scheduled prompts |
-| **Automations** | What Gomer runs unattended: rules and what they've triggered, scheduled reports, remembered facts, verified-ROAS history |
+| **Automations** | What Zundy runs unattended: rules and what they've triggered, scheduled reports, remembered facts, verified-ROAS history |
 | **Usage** | What's been spent, by whom, on what |
 | **Billing** | Credit balance, top-ups, full history |
 | **Admin** | Members, analytics, revenue (admins only) |
 
 **Automations is read-only.** It shows you what's running; you still create and
-change these by asking Gomer, because it confirms the details with you first —
+change these by asking Zundy, because it confirms the details with you first —
 the threshold, the window, the guardrails — and a form can't do that as well. So
 to add a rule or drop a remembered fact, just say so in Slack, then check this
 page to see it.
@@ -255,18 +255,18 @@ page to see it.
 
 ## Credits
 
-Gomer runs on credits. **100 credits = $1.**
+Zundy runs on credits. **100 credits = $1.**
 
 Every new workspace starts with **$100 of free credits**.
 
-Credits are consumed when Gomer thinks — answering a question, running a
+Credits are consumed when Zundy thinks — answering a question, running a
 scheduled task, evaluating a rule. Connecting accounts, browsing the dashboard,
 and reading old messages are free.
 
 You'll get:
 
-- a **heads-up in Gomer's replies** once the balance is under $10
-- a **clear stop** at zero: Gomer explains it's out of credits and links you to
+- a **heads-up in Zundy's replies** once the balance is under $10
+- a **clear stop** at zero: Zundy explains it's out of credits and links you to
   top up, rather than failing in a confusing way
 
 To top up: **Billing** → pick a pack ($25 / $50 / $100 / $250) → pay through
@@ -305,14 +305,14 @@ Slack workspace.
 | What you see | Usually means | What to do |
 | --- | --- | --- |
 | "That service isn't connected" | It's connected as **Private** by someone else, or not at all | Check Integrations; reconnect as **Team** if it should be shared |
-| Gomer can't write to your spreadsheet | Google was granted read-only access | Revoke at [myaccount.google.com/permissions](https://myaccount.google.com/permissions), reconnect, grant write |
-| Gomer mentions campaigns that don't exist | You're in an old thread carrying stale context | Start a new thread |
+| Zundy can't write to your spreadsheet | Google was granted read-only access | Revoke at [myaccount.google.com/permissions](https://myaccount.google.com/permissions), reconnect, grant write |
+| Zundy mentions campaigns that don't exist | You're in an old thread carrying stale context | Start a new thread |
 | "Out of credits" | Balance hit zero | Top up in Billing |
 | Alerts never arrive | No alerts channel set, or nothing has deviated | Set the channel; otherwise this is normal |
 | A change you approved didn't happen | The ad account connection expired | Reconnect the account in Integrations, then try again |
-| Gomer answers about the wrong account | Multiple ad accounts connected | Name the account explicitly in your question |
+| Zundy answers about the wrong account | Multiple ad accounts connected | Name the account explicitly in your question |
 | "Too many requests" | You've made a lot of requests very quickly | Wait a few minutes |
 
-If Gomer can't do something, it will say so plainly and tell you why. It's built
+If Zundy can't do something, it will say so plainly and tell you why. It's built
 to admit a limit rather than invent an answer — so when it says the data doesn't
 support a conclusion, take that at face value.

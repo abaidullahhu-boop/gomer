@@ -40,7 +40,7 @@ const TRANSCRIPT_BREAKPOINTS = 2;
 /**
  * Anthropic adapter. Connected apps are handed over as server-side MCP servers,
  * so Anthropic runs those tools itself and we only execute our own local tools —
- * the arrangement Gomer has always used, kept intact.
+ * the arrangement Zundy has always used, kept intact.
  */
 @Injectable()
 export class AnthropicProvider implements LlmProvider {

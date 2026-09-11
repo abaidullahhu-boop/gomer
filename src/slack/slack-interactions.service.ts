@@ -26,7 +26,7 @@ export interface PendingApproval {
   toolName: string;
   input: Record<string, unknown>;
   label: string;
-  /** Gomer's original description of the action, re-rendered on resolution. */
+  /** Zundy's original description of the action, re-rendered on resolution. */
   answer: string;
 }
 

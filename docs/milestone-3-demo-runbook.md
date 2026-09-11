@@ -42,7 +42,7 @@ the previous build is the easiest way to record behaviour you already fixed.
 `Milestone 3 Demo` (id `120253117340500195`, 8,000 PKR/day, paused) still exists
 in KIVOVA. Delete it in Meta Ads Manager so you can create it live on camera.
 
-### 1b. Disconnect both integrations in Gomer
+### 1b. Disconnect both integrations in Zundy
 
 Dashboard → **Integrations** → find the account → **Disconnect**. Do this for:
 
@@ -54,14 +54,14 @@ is a genuinely fresh OAuth rather than a silent re-link.
 
 ### 1c. Revoke at the providers — this is what makes the recording look real
 
-Gomer's disconnect drops the local tokens, but **Facebook and Google still have
+Zundy's disconnect drops the local tokens, but **Facebook and Google still have
 the app authorised**. Reconnect without revoking and the OAuth consent screen
 flashes past, so the recording never shows the permission grant — the part a
 client most wants to see.
 
 - **Meta**: facebook.com → Settings & Privacy → Settings → **Business
-  Integrations** → find Gomer → **Remove**.
-- **Google**: myaccount.google.com/permissions → find the Pipedream/Gomer entry →
+  Integrations** → find Zundy → **Remove**.
+- **Google**: myaccount.google.com/permissions → find the Pipedream/Zundy entry →
   **Remove access**.
 
 ---
@@ -86,7 +86,7 @@ integration with the richer consent screen, so it opens the recording strongly.
 
 > **Set both to Team (shared), not Private.** A private connection is visible
 > only to the member who made it. The Slack account you demo from is a different
-> member than the one connecting here, so a private connection would leave Gomer
+> member than the one connecting here, so a private connection would leave Zundy
 > answering "no ads account connected" on camera. This is the same scoping trap
 > that caused the Gmail incident.
 
@@ -95,7 +95,7 @@ integration with the richer consent screen, so it opens the recording strongly.
 ## Step 3 — Drive it from Slack
 
 **Start a brand-new thread.** Do not reuse the thread from the earlier test — it
-carries conversation memory of the old campaign, and Gomer will reference things
+carries conversation memory of the old campaign, and Zundy will reference things
 that are no longer there.
 
 Send these one at a time, waiting for each reply:
@@ -104,7 +104,7 @@ Send these one at a time, waiting for each reply:
 |---|---|---|
 | 1 | `list my ads accounts` | **The headline.** Returns Meta *and* Google Ads together — this is the fix. |
 | 2 | `any campaigns running anywhere?` | Cross-platform read, and the app stays attached on a follow-up (no stale answer). |
-| 3 | `create a paused traffic campaign called "Milestone 3 Demo" with a 5000 PKR daily budget` | Gomer asks which account — disambiguation. |
+| 3 | `create a paused traffic campaign called "Milestone 3 Demo" with a 5000 PKR daily budget` | Zundy asks which account — disambiguation. |
 | 4 | `Kivova` | Approval card appears. **Click Approve on camera.** |
 | 5 | `show me my campaigns` | Read-back verification: the new campaign, paused. |
 | 6 | `change the Milestone 3 Demo daily budget to 8000 PKR` | Second approval gate. Approve. |

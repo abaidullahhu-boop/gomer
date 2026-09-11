@@ -19,7 +19,7 @@ import { Workspace } from './workspace.entity';
 export type SpaceStatus = 'draft' | 'published';
 
 /**
- * A web app built by Gomer for a workspace. The app's shape lives entirely in
+ * A web app built by Zundy for a workspace. The app's shape lives entirely in
  * `spec` (a declarative JSON app spec); a single shared runtime renders any
  * Space from its spec, so no per-app code is generated or executed. Data the
  * app's end-users enter is stored generically in {@link SpaceRecord}.
@@ -33,7 +33,7 @@ export class Space {
   @Column({ type: 'uuid' })
   workspaceId!: string;
 
-  /** The workspace member who asked Gomer to build it. */
+  /** The workspace member who asked Zundy to build it. */
   @Index()
   @Column({ type: 'uuid', nullable: true })
   createdByUserId!: string | null;

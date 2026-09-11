@@ -26,7 +26,7 @@ import { Workspace } from './workspace.entity';
 export type ExportDataset = 'roas_snapshots' | 'campaign_insights' | 'rule_actions';
 
 /**
- * A recurring export of Gomer's own reporting data into a Google Sheet — the
+ * A recurring export of Zundy's own reporting data into a Google Sheet — the
  * automation behind "email me the numbers every Monday", without a human (or
  * the model) in the loop. Scheduling mirrors {@link AdRule}/{@link ScheduledTask}:
  * a cron expression plus a materialised {@link nextRun} so schedules survive
