@@ -12,7 +12,7 @@ import { ApiTags } from '@nestjs/swagger';
 import { BugReportStatus } from '../common/enums';
 import { UpdateBugReportDto } from './dto';
 import { SuperAdminGuard } from './guards/super-admin.guard';
-import { SuperAdminService } from './super-admin.service';
+import { SuperAdminService, type WorkspaceSort } from './super-admin.service';
 
 /** Clamp a `days` query param to a window the aggregates can serve. */
 function parseDays(raw: string | undefined, fallback = 30): number {
@@ -53,11 +53,16 @@ export class SuperAdminController {
     @Query('search') search?: string,
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
+    @Query('sort') sort?: string,
   ) {
+    // An unrecognised sort falls back to the default rather than erroring, for
+    // the same reason the bug filter below does: this is a view preference
+    // arriving from a URL, and a stale link should still render the table.
     return this.superAdminService.listWorkspaces({
       search,
       limit: limit ? Number(limit) : undefined,
       offset: offset ? Number(offset) : undefined,
+      sort: sort as WorkspaceSort | undefined,
     });
   }
 

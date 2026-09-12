@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { CREDITS_PER_DOLLAR } from '../ai/providers/model-catalog';
 import { BugReportStatus, UserRole } from '../common/enums';
 import {
@@ -30,13 +30,25 @@ import { UsersService } from '../users/users.service';
  */
 const USER_ALIAS = 'member';
 
+/**
+ * How the customer table may be ordered.
+ *
+ * Deliberately short. Two of these — headcount and last activity — are
+ * aggregates rather than columns, and each one costs a grouped subquery in the
+ * driver below, so the list is the questions worth a join rather than every
+ * field that happens to be displayed.
+ */
+export type WorkspaceSort = 'created' | 'members' | 'activity' | 'name';
+
+const WORKSPACE_SORTS: readonly WorkspaceSort[] = ['created', 'members', 'activity', 'name'];
+
 /** One tenant on the owner panel's workspace table. */
 export interface PlatformWorkspaceRow {
   id: string;
   name: string;
   slackTeamId: string;
   createdAt: Date;
-  members: { total: number; active: number };
+  members: { total: number; active: number; admins: number };
   credits: { granted: number; used: number; balance: number };
   /** Cash actually taken for this workspace, in cents. */
   paidCents: number;
@@ -47,7 +59,7 @@ export interface PlatformWorkspaceRow {
 
 /** The per-workspace aggregates, keyed by workspace id, that the table merges. */
 interface WorkspaceAggregates {
-  members: Map<string, { total: number; active: number }>;
+  members: Map<string, { total: number; active: number; admins: number }>;
   credits: Map<string, { granted: number; used: number; balance: number; paidCents: number }>;
   integrations: Map<string, number>;
   activity: Map<string, Date>;
@@ -177,9 +189,14 @@ export class SuperAdminService {
         .select(`${USER_ALIAS}."workspaceId"`, 'workspaceId')
         .addSelect(`COUNT(${USER_ALIAS}.id)`, 'total')
         .addSelect(`COUNT(${USER_ALIAS}.id) FILTER (WHERE ${USER_ALIAS}."isActive")`, 'active')
+        .addSelect(
+          `COUNT(${USER_ALIAS}.id) FILTER (WHERE ${USER_ALIAS}.role = :adminRole)`,
+          'admins',
+        )
         .where(`${USER_ALIAS}."workspaceId" IN (:...workspaceIds)`, { workspaceIds })
+        .setParameter('adminRole', UserRole.ADMIN)
         .groupBy(`${USER_ALIAS}."workspaceId"`)
-        .getRawMany<{ workspaceId: string; total: string; active: string }>(),
+        .getRawMany<{ workspaceId: string; total: string; active: string; admins: string }>(),
       this.creditsByWorkspace(workspaceIds),
       this.integrationRepository
         .createQueryBuilder('integration')
@@ -206,7 +223,7 @@ export class SuperAdminService {
       members: new Map(
         memberRows.map((row) => [
           row.workspaceId,
-          { total: Number(row.total), active: Number(row.active) },
+          { total: Number(row.total), active: Number(row.active), admins: Number(row.admins) },
         ]),
       ),
       credits,
@@ -228,7 +245,7 @@ export class SuperAdminService {
       name: workspace.name,
       slackTeamId: workspace.slackTeamId,
       createdAt: workspace.createdAt,
-      members: aggregates.members.get(workspace.id) ?? { total: 0, active: 0 },
+      members: aggregates.members.get(workspace.id) ?? { total: 0, active: 0, admins: 0 },
       credits: {
         granted: credits?.granted ?? 0,
         used: credits?.used ?? 0,
@@ -249,39 +266,111 @@ export class SuperAdminService {
   }
 
   /**
-   * The customer table: every workspace, newest first, with its numbers.
+   * The customer table: every workspace with its numbers, in the asked order.
    *
    * Paged rather than "all of them" — the aggregate queries take an id list, so
    * the page size bounds the work regardless of how many tenants exist.
+   *
+   * Ordering runs in two steps because two of the sort keys are aggregates, and
+   * an aggregate cannot be paged after the fact: taking the first 50 workspaces
+   * and *then* counting their members sorts one arbitrary page rather than the
+   * platform. So a driver query resolves id order and the page window in the
+   * database, and the row bodies are loaded from those ids. The joins it needs
+   * for that are grouped subqueries, not direct joins, for the reason
+   * {@link creditsByWorkspace} spells out: joining `users` and `credit_events`
+   * to `workspaces` at once multiplies every member by every run.
    */
-  async listWorkspaces(options: { search?: string; limit?: number; offset?: number } = {}): Promise<{
-    total: number;
-    rows: PlatformWorkspaceRow[];
-  }> {
+  async listWorkspaces(
+    options: { search?: string; limit?: number; offset?: number; sort?: WorkspaceSort } = {},
+  ): Promise<{ total: number; rows: PlatformWorkspaceRow[]; sort: WorkspaceSort }> {
     const limit = Math.min(Math.max(options.limit ?? 50, 1), 200);
     const offset = Math.max(options.offset ?? 0, 0);
-
-    const query = this.workspaceRepository
-      .createQueryBuilder('workspace')
-      .orderBy('workspace."createdAt"', 'DESC')
-      .skip(offset)
-      .take(limit);
-
+    const sort: WorkspaceSort = WORKSPACE_SORTS.includes(options.sort as WorkspaceSort)
+      ? (options.sort as WorkspaceSort)
+      : 'created';
     const search = options.search?.trim();
-    if (search) {
-      // Matched on the two identifiers the owner actually has to hand when
-      // someone emails in: what the workspace is called, and its Slack team id.
-      query.where('(workspace.name ILIKE :search OR workspace."slackTeamId" ILIKE :search)', {
-        search: `%${search}%`,
-      });
+
+    // Matched on the two identifiers the owner actually has to hand when
+    // someone emails in: what the workspace is called, and its Slack team id.
+    const searchClause = '(workspace.name ILIKE :search OR workspace."slackTeamId" ILIKE :search)';
+    const searchParams = { search: `%${search ?? ''}%` };
+
+    const driver = this.workspaceRepository
+      .createQueryBuilder('workspace')
+      .select('workspace.id', 'id')
+      .addSelect('workspace.name', 'name')
+      .addSelect('workspace."createdAt"', 'created')
+      .limit(limit)
+      .offset(offset);
+
+    // Joined only when they are what we are ordering by. The page's own
+    // headcount and activity numbers come from aggregatesFor(), scoped to the
+    // ids; these subqueries scan the whole table, so they are not worth paying
+    // for on a sort that does not read them.
+    if (sort === 'members') {
+      driver
+        .leftJoin(
+          (sub) =>
+            sub
+              .select(`${USER_ALIAS}."workspaceId"`, 'workspaceId')
+              .addSelect(`COUNT(${USER_ALIAS}.id)`, 'headcount')
+              .from(User, USER_ALIAS)
+              .groupBy(`${USER_ALIAS}."workspaceId"`),
+          'roster',
+          'roster."workspaceId" = workspace.id',
+        )
+        .addSelect('COALESCE(roster.headcount, 0)', 'members')
+        .orderBy('members', 'DESC');
+    } else if (sort === 'activity') {
+      driver
+        .leftJoin(
+          (sub) =>
+            sub
+              .select('run."workspaceId"', 'workspaceId')
+              .addSelect('MAX(run."createdAt")', 'seen')
+              .from(CreditEvent, 'run')
+              .groupBy('run."workspaceId"'),
+          'runs',
+          'runs."workspaceId" = workspace.id',
+        )
+        .addSelect('runs.seen', 'activity')
+        // A workspace that has never run anything sorts last rather than first:
+        // NULL is "no activity", not "infinitely recent".
+        .orderBy('activity', 'DESC', 'NULLS LAST');
+    } else if (sort === 'name') {
+      driver.orderBy('LOWER(workspace.name)', 'ASC');
+    } else {
+      driver.orderBy('created', 'DESC');
     }
 
-    const [workspaces, total] = await query.getManyAndCount();
-    const aggregates = await this.aggregatesFor(workspaces.map((workspace) => workspace.id));
-    return {
-      total,
-      rows: workspaces.map((workspace) => this.toWorkspaceRow(workspace, aggregates)),
-    };
+    const counter = this.workspaceRepository.createQueryBuilder('workspace');
+    if (search) {
+      driver.where(searchClause, searchParams);
+      counter.where(searchClause, searchParams);
+    }
+
+    const [ordered, total] = await Promise.all([
+      driver.getRawMany<{ id: string }>(),
+      counter.getCount(),
+    ]);
+
+    const ids = ordered.map((row) => row.id);
+    if (ids.length === 0) return { total, rows: [], sort };
+
+    const [workspaces, aggregates] = await Promise.all([
+      this.workspaceRepository.find({ where: { id: In(ids) } }),
+      this.aggregatesFor(ids),
+    ]);
+
+    // find() returns rows in whatever order Postgres hands them back, so the
+    // driver's ordering is re-imposed here rather than assumed.
+    const byId = new Map(workspaces.map((workspace) => [workspace.id, workspace]));
+    const rows = ids
+      .map((id) => byId.get(id))
+      .filter((workspace): workspace is Workspace => workspace !== undefined)
+      .map((workspace) => this.toWorkspaceRow(workspace, aggregates));
+
+    return { total, rows, sort };
   }
 
   /**
@@ -351,6 +440,66 @@ export class SuperAdminService {
   }
 
   /**
+   * The shape of the customer base by headcount, in one round trip.
+   *
+   * "How many workspaces, with how many people in them" is two different
+   * questions and the averages answer neither on their own: ten solo Slacks and
+   * one fifty-person company average out to a healthy-looking team size that
+   * describes nobody. So this returns the spread — the median next to the mean,
+   * and a bucketed distribution — rather than a single number.
+   *
+   * The per-workspace counts are folded to one row inside the subquery, so the
+   * database returns exactly one row however many tenants exist. Counting in
+   * JavaScript instead would mean shipping a row per workspace to compute four
+   * totals.
+   */
+  private async teamSizes() {
+    const row = await this.workspaceRepository.manager
+      .createQueryBuilder()
+      .select('COUNT(sizes.id)', 'workspaces')
+      .addSelect('COALESCE(SUM(sizes.members), 0)', 'people')
+      .addSelect('COALESCE(SUM(sizes.active), 0)', 'activePeople')
+      .addSelect('COALESCE(AVG(sizes.members), 0)', 'mean')
+      .addSelect(
+        'COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY sizes.members), 0)',
+        'median',
+      )
+      .addSelect('COALESCE(MAX(sizes.members), 0)', 'largest')
+      .addSelect('COUNT(sizes.id) FILTER (WHERE sizes.members <= 1)', 'solo')
+      .addSelect('COUNT(sizes.id) FILTER (WHERE sizes.members BETWEEN 2 AND 5)', 'small')
+      .addSelect('COUNT(sizes.id) FILTER (WHERE sizes.members BETWEEN 6 AND 20)', 'medium')
+      .addSelect('COUNT(sizes.id) FILTER (WHERE sizes.members > 20)', 'large')
+      .from(
+        (sub) =>
+          sub
+            .select('workspace.id', 'id')
+            .addSelect(`COUNT(${USER_ALIAS}.id)`, 'members')
+            .addSelect(`COUNT(${USER_ALIAS}.id) FILTER (WHERE ${USER_ALIAS}."isActive")`, 'active')
+            .from(Workspace, 'workspace')
+            // LEFT, so a workspace whose members have all been removed still
+            // counts as a workspace — at zero, in the solo bucket.
+            .leftJoin(User, USER_ALIAS, `${USER_ALIAS}."workspaceId" = workspace.id`)
+            .groupBy('workspace.id'),
+        'sizes',
+      )
+      .getRawOne<Record<string, string>>();
+
+    return {
+      people: Number(row?.people ?? 0),
+      activePeople: Number(row?.activePeople ?? 0),
+      meanTeamSize: Number(row?.mean ?? 0),
+      medianTeamSize: Number(row?.median ?? 0),
+      largestTeam: Number(row?.largest ?? 0),
+      distribution: {
+        solo: Number(row?.solo ?? 0),
+        small: Number(row?.small ?? 0),
+        medium: Number(row?.medium ?? 0),
+        large: Number(row?.large ?? 0),
+      },
+    };
+  }
+
+  /**
    * Platform headline numbers.
    *
    * Revenue is the sum of `credit_grants.amountCents`, which is what was
@@ -371,6 +520,8 @@ export class SuperAdminService {
       eventTotals,
       windowEvents,
       bugCounts,
+      teams,
+      activeWorkspaces,
     ] = await Promise.all([
       this.workspaceRepository.count(),
       this.workspaceRepository
@@ -417,6 +568,14 @@ export class SuperAdminService {
         .addSelect('COUNT(bug.id)', 'count')
         .groupBy('bug.status')
         .getRawMany<{ status: BugReportStatus; count: string }>(),
+      this.teamSizes(),
+      // Distinct tenants that ran anything in the window — the denominator for
+      // "are these workspaces customers or just signups".
+      this.creditEventRepository
+        .createQueryBuilder('event')
+        .select('COUNT(DISTINCT event."workspaceId")', 'count')
+        .where('event."createdAt" >= :from', { from })
+        .getRawOne<{ count: string }>(),
     ]);
 
     const windowChargedUsd = Number(windowEvents?.credits ?? 0) / CREDITS_PER_DOLLAR;
@@ -425,13 +584,22 @@ export class SuperAdminService {
     return {
       days,
       range: { from: from.toISOString(), to: to.toISOString() },
-      workspaces: { total: workspaceCount, newInWindow: newWorkspaces },
+      workspaces: {
+        total: workspaceCount,
+        newInWindow: newWorkspaces,
+        activeInWindow: Number(activeWorkspaces?.count ?? 0),
+        // Signed up, never ran anything in the window. Not the same as churned —
+        // a workspace that ran nothing this month still has its credits.
+        idleInWindow: Math.max(workspaceCount - Number(activeWorkspaces?.count ?? 0), 0),
+      },
       users: {
         total: Number(userCounts?.total ?? 0),
         active: Number(userCounts?.active ?? 0),
         activeInWindow: Number(userCounts?.activeInWindow ?? 0),
         admins: Number(userCounts?.admins ?? 0),
       },
+      // How the headcount is spread across tenants, not just its total.
+      teams,
       revenue: {
         totalCents: Number(grantTotals?.paid ?? 0),
         windowCents: Number(windowGrants?.paid ?? 0),
