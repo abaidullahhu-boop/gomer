@@ -39,7 +39,7 @@ import { RoasService } from '../integrations/roas.service';
 import { ExportsService } from '../exports/exports.service';
 import { RulesService } from '../rules/rules.service';
 import { SpacesService } from '../spaces/spaces.service';
-import { UsageService } from '../usage/usage.service';
+import { CREDITS_PER_DOLLAR, UsageService } from '../usage/usage.service';
 import { UsersService } from '../users/users.service';
 import {
   META_ADS_CREATE_AD,
@@ -92,8 +92,14 @@ import {
 import { SPACE_TOOLS } from './space-tools';
 import { GET_WORKSPACE_STATS, WORKSPACE_TOOLS } from './workspace-tools';
 
-/** Balance (in credits; 1 credit = $0.01) under which replies carry a top-up nudge. */
-const LOW_BALANCE_CREDITS = 1000;
+/**
+ * Balance under which replies carry a top-up nudge: $10 of credits.
+ *
+ * Derived from {@link CREDITS_PER_DOLLAR} rather than written as a count. The
+ * literal 1000 here survived the move from 100 to 400 credits per dollar, so
+ * the nudge fired at $2.50 and reported a balance four times its real size.
+ */
+const LOW_BALANCE_CREDITS = 10 * CREDITS_PER_DOLLAR;
 
 /**
  * How long one low-balance nudge suppresses the next in the same conversation.
@@ -848,7 +854,7 @@ export class AiService {
       (await this.shouldNudgeLowBalance(workspaceId, options.conversationId ?? null))
     ) {
       answer +=
-        `\n\n_Heads up: this workspace has about $${(creditBalance.balance / 100).toFixed(2)} ` +
+        `\n\n_Heads up: this workspace has about $${(creditBalance.balance / CREDITS_PER_DOLLAR).toFixed(2)} ` +
         `of credits left. Top up at <${billingUrl}|${billingUrl}>._`;
     }
 

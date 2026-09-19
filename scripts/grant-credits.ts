@@ -4,7 +4,7 @@
  * grant lands in the ledger exactly as a Stripe top-up would.
  *
  *   npm run credits                          # list workspaces and balances
- *   npm run credits -- <workspaceId> 10000   # grant 10,000 credits ($100)
+ *   npm run credits -- <workspaceId> 10000   # grant 10,000 credits ($25)
  */
 import 'dotenv/config';
 import { NestFactory } from '@nestjs/core';
@@ -13,6 +13,10 @@ import { AppModule } from '../src/app.module';
 import { UsageService } from '../src/usage/usage.service';
 import { Workspace } from '../src/database/entities/workspace.entity';
 import { CreditGrantReason } from '../src/common/enums/credit-grant-reason.enum';
+import { CREDITS_PER_DOLLAR } from '../src/ai/providers/model-catalog';
+
+/** Credits as the dollars they were bought at, for display only. */
+const asDollars = (credits: number) => `$${(credits / CREDITS_PER_DOLLAR).toFixed(2)}`;
 
 async function main(): Promise<void> {
   const [workspaceId, rawCredits] = process.argv.slice(2);
@@ -32,7 +36,7 @@ async function main(): Promise<void> {
         const balance = await usage.getBalance(workspace.id);
         console.log(
           `  ${workspace.id}  ${(workspace.name ?? '—').padEnd(24)} ` +
-            `$${(balance.balance / 100).toFixed(2)}`,
+            `${balance.balance.toLocaleString()} credits (${asDollars(balance.balance)})`,
         );
       }
       console.log('\nto grant:  npm run credits -- <workspaceId> 10000');
@@ -55,7 +59,8 @@ async function main(): Promise<void> {
     });
     const balance = await usage.getBalance(workspaceId);
     console.log(
-      `Granted ${credits} credits. New balance: $${(balance.balance / 100).toFixed(2)}`,
+      `Granted ${credits.toLocaleString()} credits (${asDollars(credits)}). ` +
+        `New balance: ${balance.balance.toLocaleString()} credits (${asDollars(balance.balance)})`,
     );
   } finally {
     await context.close();

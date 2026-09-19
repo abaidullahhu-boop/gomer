@@ -94,11 +94,9 @@ const ANTHROPIC_MODELS: ModelDefinition[] = [
     provider: 'anthropic',
     inputPricePerMillion: 3,
     outputPricePerMillion: 15,
-    // Anthropic's introductory rate, in effect through 2026-08-31. Delete these
-    // two lines once it lapses and cost recording falls back to list price —
-    // leaving them set would under-record what Sonnet 5 costs us.
-    costInputPricePerMillion: 2,
-    costOutputPricePerMillion: 10,
+    // Anthropic's introductory rate (2 / 10) lapsed on 2026-08-31; cost
+    // recording now falls back to list price. Set the cost overrides again only
+    // if a negotiated rate replaces it.
     supportsTools: true,
     supportsRemoteMcp: true,
     supportsAdaptiveThinking: true,
