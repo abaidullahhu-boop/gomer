@@ -13,7 +13,17 @@ export interface TeamMemberView {
   role: UserRole;
   isCurrentUser: boolean;
   lastActiveAt: Date | null;
+  /** Set when an admin added them by email; with a null `lastActiveAt` they are still "Invited". */
+  invitedAt: Date | null;
   createdAt: Date;
+}
+
+export interface ProvisionInvitedInput {
+  workspaceId: string;
+  slackUserId: string;
+  name: string;
+  email: string | null;
+  avatarUrl: string | null;
 }
 
 export interface UpsertUserFromSlackInput {
@@ -63,8 +73,44 @@ export class UsersService {
       role: member.role,
       isCurrentUser: member.id === currentUserId,
       lastActiveAt: member.lastActiveAt,
+      invitedAt: member.invitedAt,
       createdAt: member.createdAt,
     };
+  }
+
+  /**
+   * Create (or reactivate) a member from an admin's invite, ahead of that
+   * person ever signing in. Always a MEMBER: the inviter exists, so nobody
+   * provisioned this way can be the founding admin. `lastActiveAt` stays null
+   * until they first sign in or message the bot, which is what the Team page
+   * reads as "Invited". Re-inviting a deactivated member switches them back on,
+   * since the caller is an admin and that is what re-inviting means.
+   */
+  async provisionInvited(input: ProvisionInvitedInput): Promise<User> {
+    const existing = await this.findBySlackIdentity(input.workspaceId, input.slackUserId);
+
+    if (existing) {
+      existing.name = input.name || existing.name;
+      existing.email = input.email ?? existing.email;
+      existing.avatarUrl = input.avatarUrl ?? existing.avatarUrl;
+      existing.isActive = true;
+      existing.invitedAt = new Date();
+      return this.userRepository.save(existing);
+    }
+
+    const user = this.userRepository.create({
+      workspaceId: input.workspaceId,
+      slackUserId: input.slackUserId,
+      name: input.name,
+      email: input.email,
+      avatarUrl: input.avatarUrl,
+      role: UserRole.MEMBER,
+      isActive: true,
+      invitedAt: new Date(),
+      lastActiveAt: null,
+    });
+
+    return this.userRepository.save(user);
   }
 
   /** Active members of a workspace, oldest first (the first member is the founding admin). */

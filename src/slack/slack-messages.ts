@@ -44,6 +44,29 @@ export function buildWelcomeMessage(
 }
 
 /**
+ * The DM a teammate gets when an admin adds them from the dashboard. They are
+ * already a member by the time it is sent, so it tells them where Gaspo is
+ * rather than asking them to accept anything. `dashboardUrl` is the sign-in
+ * page; `<...>` is Slack's auto-link syntax.
+ */
+export function buildInviteMessage(
+  inviterName: string | null | undefined,
+  workspaceName: string,
+  dashboardUrl: string,
+): string {
+  const inviter = (inviterName ?? '').trim() || 'A teammate';
+  return [
+    `Hi :wave: *${inviter}* added you to *${workspaceName}* on Gaspo, your team's AI coworker.`,
+    '',
+    ':speech_balloon: *DM me here* — just message me like a coworker. Research, analysis, reports, automation — anything.',
+    `:bar_chart: *Open the dashboard* at <${dashboardUrl}> — sign in with Slack to see usage, connected tools and your team.`,
+    '',
+    'Try one now — just reply here:',
+    '• _Summarize the last week of activity in one of our channels_',
+  ].join('\n');
+}
+
+/**
  * action_id values Slack sends back when an approval button is clicked.
  *
  * These keep the old `gomer_` prefix deliberately: approval cards already posted

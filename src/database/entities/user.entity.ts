@@ -51,6 +51,14 @@ export class User {
   @Column({ type: 'timestamptz', nullable: true })
   lastActiveAt!: Date | null;
 
+  /**
+   * When an admin added this person from the dashboard, before they had signed
+   * in or messaged the bot. Null for members who arrived on their own. Paired
+   * with a null `lastActiveAt` it means "invited, not yet shown up".
+   */
+  @Column({ type: 'timestamptz', nullable: true })
+  invitedAt!: Date | null;
+
   @Column({ type: 'text', nullable: true })
   refreshTokenHash!: string | null;
 
