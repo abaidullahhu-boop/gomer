@@ -6,9 +6,11 @@ import { firstValueFrom } from 'rxjs';
 import { SLACK_API_BASE_URL, SLACK_OAUTH_AUTHORIZE_URL } from '../common/constants';
 import { AppConfig } from '../config/configuration';
 import {
+  SlackEmailLookup,
   SlackIdentity,
   SlackOAuthAccessResponse,
   SlackUserInfoResponse,
+  SlackUserLookupResponse,
 } from './interfaces/slack-oauth.interface';
 
 /**
@@ -295,6 +297,45 @@ export class SlackService {
         `users.list error: ${error instanceof Error ? error.message : String(error)}`,
       );
       return null;
+    }
+  }
+
+  /**
+   * Resolve a Slack workspace member by the email on their Slack account
+   * (users.lookupByEmail). Needs the `users:read.email` scope. Unlike the other
+   * best-effort helpers this reports *why* it found nobody, because the admin
+   * inviting that address is told different things for "not in your Slack"
+   * and "Slack didn't answer".
+   */
+  async lookupUserByEmail(botToken: string, email: string): Promise<SlackEmailLookup> {
+    try {
+      const response = await firstValueFrom(
+        this.httpService.get<SlackUserLookupResponse>(`${SLACK_API_BASE_URL}/users.lookupByEmail`, {
+          params: { email },
+          headers: { Authorization: `Bearer ${botToken}` },
+        }),
+      );
+      const user = response.data.user;
+      if (!response.data.ok || !user) {
+        const error = response.data.error ?? 'unknown_error';
+        if (error === 'users_not_found') return { status: 'not_found' };
+        this.logger.warn(`users.lookupByEmail failed: ${error}`);
+        return { status: 'error', error };
+      }
+      const profile = user.profile ?? {};
+      return {
+        status: 'found',
+        id: user.id,
+        name: profile.display_name || profile.real_name || user.real_name || user.name || user.id,
+        email: profile.email ?? email,
+        avatarUrl: profile.image_512 ?? profile.image_192 ?? null,
+        deleted: user.deleted === true,
+        isBot: user.is_bot === true,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.warn(`users.lookupByEmail error: ${message}`);
+      return { status: 'error', error: message };
     }
   }
 

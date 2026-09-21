@@ -34,6 +34,45 @@ export interface SlackUserInfoResponse {
   };
 }
 
+/** Subset of the Slack `users.lookupByEmail` response we rely on. */
+export interface SlackUserLookupResponse {
+  ok: boolean;
+  error?: string;
+  user?: {
+    id: string;
+    name?: string;
+    real_name?: string;
+    deleted?: boolean;
+    is_bot?: boolean;
+    profile?: {
+      real_name?: string;
+      display_name?: string;
+      email?: string;
+      image_192?: string;
+      image_512?: string;
+    };
+  };
+}
+
+/**
+ * Outcome of resolving an email to a Slack member. "Not found" and "the call
+ * failed" are kept apart on purpose: the first is something the admin can fix
+ * (add the person to Slack), the second is something we should retry.
+ */
+export type SlackEmailLookup =
+  | {
+      status: 'found';
+      id: string;
+      name: string;
+      email: string | null;
+      avatarUrl: string | null;
+      /** Deactivated in Slack — cannot be messaged or sign in. */
+      deleted: boolean;
+      isBot: boolean;
+    }
+  | { status: 'not_found' }
+  | { status: 'error'; error: string };
+
 /** Normalized Slack identity used by the auth flow. */
 export interface SlackIdentity {
   slackTeamId: string;

@@ -16,6 +16,7 @@ import { DatabaseModule } from './database/database.module';
 import { ExportsSchedulerModule } from './exports/exports-scheduler.module';
 import { HealthModule } from './health/health.module';
 import { IntegrationsModule } from './integrations/integrations.module';
+import { InvitesModule } from './invites/invites.module';
 import { MonitoringSchedulerModule } from './monitoring/monitoring-scheduler.module';
 import { RedisModule } from './redis/redis.module';
 import { RulesSchedulerModule } from './rules/rules-scheduler.module';
@@ -42,6 +43,7 @@ import { WorkspacesModule } from './workspaces/workspaces.module';
     AuthModule,
     UsersModule,
     WorkspacesModule,
+    InvitesModule,
     IntegrationsModule,
     SkillsModule,
     SpacesModule,
