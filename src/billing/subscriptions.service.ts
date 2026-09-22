@@ -14,15 +14,46 @@ import {
 import { UsersService } from '../users/users.service';
 import { SubscriptionPlan, findPlan } from './plans';
 
+/** A billing period, as unix seconds. */
+interface StripePeriodFields {
+  current_period_start?: number;
+  current_period_end?: number;
+}
+
 /** The shape of a Stripe subscription object, in the fields we act on. */
-export interface StripeSubscriptionShape {
+export interface StripeSubscriptionShape extends StripePeriodFields {
   id: string;
   customer: string;
   status: string;
-  current_period_start: number;
-  current_period_end: number;
+  /** Where the period lives on API versions from 2025-03-31 onwards. */
+  items?: { data?: StripePeriodFields[] };
   cancel_at_period_end?: boolean;
   metadata?: Record<string, string>;
+}
+
+/**
+ * The period a subscription is in, read from either place Stripe puts it.
+ *
+ * Stripe API versions from 2025-03-31 removed `current_period_*` from the
+ * subscription and moved it onto each subscription item. A webhook endpoint
+ * pins its own version, and the live endpoint is on a later one — so the
+ * top-level fields simply never arrive there. Reading only them built an
+ * Invalid Date, the insert failed, and a subscriber was charged with no row to
+ * renew against. Our checkouts carry a single line item, so its period is the
+ * subscription's.
+ */
+export function subscriptionPeriod(
+  stripe: StripeSubscriptionShape,
+): { start: Date; end: Date } | null {
+  const source = [stripe, ...(stripe.items?.data ?? [])].find(
+    (fields) =>
+      Number.isFinite(fields.current_period_start) && Number.isFinite(fields.current_period_end),
+  );
+  if (!source) return null;
+  return {
+    start: new Date(source.current_period_start! * 1000),
+    end: new Date(source.current_period_end! * 1000),
+  };
 }
 
 /** What a renewal did, for logging and for the tests to assert against. */
@@ -86,6 +117,14 @@ export class SubscriptionsService {
       where: { stripeSubscriptionId: stripe.id },
     });
 
+    const period = subscriptionPeriod(stripe);
+    if (!period && !existing) {
+      // Both columns are NOT NULL, so there is nothing valid to insert. Failing
+      // keeps Stripe retrying and puts the cause in the log, rather than in a
+      // Postgres error about a malformed timestamp.
+      throw new Error(`Subscription ${stripe.id} carries no current period`);
+    }
+
     const row = this.subscriptionRepository.create({
       ...(existing ?? {}),
       workspaceId,
@@ -93,8 +132,7 @@ export class SubscriptionsService {
       status: this.toStatus(stripe.status),
       stripeSubscriptionId: stripe.id,
       stripeCustomerId: stripe.customer,
-      currentPeriodStart: new Date(stripe.current_period_start * 1000),
-      currentPeriodEnd: new Date(stripe.current_period_end * 1000),
+      ...(period && { currentPeriodStart: period.start, currentPeriodEnd: period.end }),
       cancelAtPeriodEnd: Boolean(stripe.cancel_at_period_end),
     });
     return this.subscriptionRepository.save(row);
