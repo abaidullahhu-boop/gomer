@@ -67,6 +67,21 @@ export function buildInviteMessage(
 }
 
 /**
+ * The DM carrying a sign-in link for a Space (an app Gaspo built). Someone
+ * typed this teammate's email on the app's sign-in page, so it says what to do
+ * if that was not them. The app name is model-written, so it is escaped before
+ * it goes inside Slack's `<url|label>` link syntax.
+ */
+export function buildSpaceSignInMessage(spaceName: string, link: string): string {
+  const name = spaceName.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return [
+    `:key: Here's your sign-in link for *${name}*: <${link}|Open ${name}>`,
+    '',
+    "It works once and expires in 30 minutes. If you didn't ask for it, you can ignore this message.",
+  ].join('\n');
+}
+
+/**
  * action_id values Slack sends back when an approval button is clicked.
  *
  * These keep the old `gomer_` prefix deliberately: approval cards already posted
