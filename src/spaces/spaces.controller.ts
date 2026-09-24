@@ -12,6 +12,7 @@ import {
 } from '@nestjs/common';
 import { ApiTags } from '@nestjs/swagger';
 import { CurrentUser, Public, RateLimit } from '../common/decorators';
+import { AuthenticatedUser } from '../common/interfaces';
 import { SpaceRecord, SpaceUser } from '../database/entities';
 import { RecordDataDto, RequestMagicLinkDto } from './dto';
 import { SpaceAuthGuard, SpaceRequest } from './guards/space-auth.guard';
@@ -72,9 +73,9 @@ export class SpacesController {
   }
 
   /**
-   * Request a magic-link login for a Space end-user. Unauthenticated and it
-   * sends mail, so it is the one route an outsider could turn into a spam relay
-   * against a third party's inbox — rate limited per client address.
+   * Request a sign-in link for a Space end-user. Unauthenticated and it sends
+   * Slack DMs, so it is the one route an outsider could turn into a spam relay
+   * against the team's inboxes — rate limited per client address.
    */
   @Public()
   @RateLimit({ limit: 5, windowSeconds: 15 * 60 })
@@ -84,6 +85,19 @@ export class SpacesController {
     @Body() dto: RequestMagicLinkDto,
   ): Promise<RequestLinkResult> {
     return this.spacesAuthService.requestLink(slug, dto.email);
+  }
+
+  /**
+   * Exchange the caller's dashboard session for a session in one of their
+   * workspace's Spaces, so the team opens its own apps without a link. Not
+   * public: the global workspace JWT guard is what proves who they are.
+   */
+  @Post(':slug/auth/workspace-session')
+  workspaceSession(
+    @CurrentUser() user: AuthenticatedUser,
+    @Param('slug') slug: string,
+  ): Promise<SpaceSessionResult> {
+    return this.spacesAuthService.workspaceSession(slug, user.workspaceId, user.userId);
   }
 
   /**
