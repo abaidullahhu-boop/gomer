@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, HttpException } from '@nestjs/common';
 import { AppSpec, DashboardWidgetSpec, EntitySpec, FieldSpec, FieldType } from './app-spec';
 
 const FIELD_TYPES: FieldType[] = [
@@ -14,8 +14,19 @@ const FIELD_TYPES: FieldType[] = [
 
 const NAME_RE = /^[A-Za-z][A-Za-z0-9_]*$/;
 
-function isObject(value: unknown): value is Record<string, unknown> {
+export function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * The individual problems a validator collected, or none. The exception's own
+ * message is only the headline ("Invalid app spec"), so anything relaying a
+ * rejection to the model needs these to say what to fix.
+ */
+export function validationReasons(error: unknown): string[] {
+  if (!(error instanceof HttpException)) return [];
+  const response = error.getResponse();
+  return isObject(response) && Array.isArray(response.errors) ? response.errors.map(String) : [];
 }
 
 /**
