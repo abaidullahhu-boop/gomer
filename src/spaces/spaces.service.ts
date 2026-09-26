@@ -3,7 +3,13 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { EntityManager, In, Repository } from 'typeorm';
 import { AppConfig } from '../config/configuration';
-import { Space, SpaceRecord, SpaceUser } from '../database/entities';
+import { Space, SpaceKind, SpaceRecord, SpaceUser } from '../database/entities';
+import {
+  applyPageEdits,
+  validatePageHtml,
+  validatePageInput,
+  validatePageStateEntry,
+} from './page/page-input';
 import { AppSpec, EntitySpec } from './spec/app-spec';
 import { describeApp, prepareSeedRecords, SeedRecord } from './spec/seed-records';
 import { validateAppSpec, validateRecordData } from './spec/validate-spec';
@@ -15,6 +21,7 @@ export interface SpaceView {
   name: string;
   description: string | null;
   status: Space['status'];
+  kind: SpaceKind;
   url: string;
   entityCount: number;
   viewCount: number;
@@ -32,8 +39,18 @@ export interface SeededSpace {
 export interface PublicSpaceView {
   slug: string;
   name: string;
+  kind: SpaceKind;
   spec: AppSpec;
 }
+
+/** What the runtime needs to show a page: its document and what it has saved. */
+export interface PageDocument {
+  html: string;
+  state: Record<string, unknown>;
+}
+
+/** Most a page may save in total, in bytes of JSON. */
+const MAX_PAGE_STATE_BYTES = 1_000_000;
 
 /**
  * Owns Spaces: creating them from an AI-produced spec, exposing them to the
@@ -91,7 +108,7 @@ export class SpacesService {
    * built empty. A reference may name a row that is already in the app.
    */
   async addRecords(workspaceId: string, slug: string, recordsInput: unknown): Promise<SeededSpace> {
-    const space = await this.findBySlugForWorkspace(workspaceId, slug);
+    const space = await this.findAppForWorkspace(workspaceId, slug);
     const targets = [
       ...new Set(
         space.spec.entities.flatMap((e) =>
@@ -116,12 +133,101 @@ export class SpacesService {
 
   /** Replace the spec of an existing Space (re-validated). */
   async updateSpec(workspaceId: string, slug: string, specInput: unknown): Promise<Space> {
-    const space = await this.findBySlugForWorkspace(workspaceId, slug);
+    const space = await this.findAppForWorkspace(workspaceId, slug);
     const spec = validateAppSpec(specInput);
     space.spec = spec;
     space.name = spec.name;
     space.description = spec.description ?? null;
     return this.spaceRepository.save(space);
+  }
+
+  // ---- Pages --------------------------------------------------------------
+
+  /** Publish a page Gaspo wrote as a whole HTML document. */
+  async createPage(workspaceId: string, userId: string | null, input: unknown): Promise<Space> {
+    const page = validatePageInput(input);
+    const slug = await this.uniqueSlug(page.name);
+    return this.spaceRepository.save(
+      this.spaceRepository.create({
+        workspaceId,
+        createdByUserId: userId,
+        slug,
+        name: page.name,
+        description: page.description,
+        kind: 'page',
+        html: page.html,
+        spec: pageSpec(page.name, page.description, page.allowSignup),
+        status: 'published',
+      }),
+    );
+  }
+
+  /**
+   * Change a page: replace its whole document, or apply find/replace edits to
+   * the current one, so a small fix does not mean rewriting the whole page.
+   */
+  async updatePage(
+    workspaceId: string,
+    slug: string,
+    input: { html?: unknown; edits?: unknown; name?: unknown },
+  ): Promise<Space> {
+    const page = await this.findPageForWorkspace(workspaceId, slug);
+    if ((input.html === undefined) === (input.edits === undefined)) {
+      throw new BadRequestException('Pass either html (the whole page) or edits, not both');
+    }
+    const html =
+      input.html !== undefined
+        ? validatePageHtml(input.html)
+        : applyPageEdits(page.html ?? '', input.edits);
+    if (input.name !== undefined) {
+      if (typeof input.name !== 'string' || input.name.trim() === '') {
+        throw new BadRequestException('name must be a non-empty string');
+      }
+      page.name = input.name.trim();
+      page.spec = { ...page.spec, name: page.name };
+    }
+    await this.spaceRepository.update(page.id, { html, name: page.name, spec: page.spec });
+    page.html = html;
+    return page;
+  }
+
+  /** A page with its HTML, for the model to read before editing it. */
+  readPage(workspaceId: string, slug: string): Promise<Space> {
+    return this.findPageForWorkspace(workspaceId, slug);
+  }
+
+  /** A page's document and saved state, for the runtime. */
+  async pageDocument(space: Space): Promise<PageDocument> {
+    if (space.kind !== 'page') throw new NotFoundException('Page not found');
+    const row = await this.spaceRepository.findOne({
+      where: { id: space.id },
+      select: { id: true, html: true, pageState: true },
+    });
+    if (!row?.html) throw new NotFoundException('Page not found');
+    return { html: row.html, state: row.pageState ?? {} };
+  }
+
+  /**
+   * Save one key of what a page remembers; `null` removes it. Merged in the
+   * database, so two people ticking different steps at once both keep theirs.
+   */
+  async savePageState(space: Space, key: unknown, value: unknown): Promise<{ success: boolean }> {
+    if (space.kind !== 'page') throw new NotFoundException('Page not found');
+    const entry = validatePageStateEntry(key, value);
+    const next =
+      value === null || value === undefined
+        ? `"pageState" - CAST(:key AS text)`
+        : `"pageState" || jsonb_build_object(CAST(:key AS text), CAST(:json AS jsonb))`;
+    const result = await this.spaceRepository
+      .createQueryBuilder()
+      .update(Space)
+      .set({ pageState: () => next })
+      .where('id = :id', { id: space.id })
+      .andWhere(`octet_length((${next})::text) <= :max`, { max: MAX_PAGE_STATE_BYTES })
+      .setParameters({ key: entry.key, json: entry.json })
+      .execute();
+    if (!result.affected) throw new BadRequestException('This page has saved too much data');
+    return { success: true };
   }
 
   /** Every Space in a workspace, newest first. */
@@ -150,7 +256,7 @@ export class SpacesService {
   /** The public spec served to the runtime to render the app. */
   async findPublicBySlug(slug: string): Promise<PublicSpaceView> {
     const space = await this.findPublishedBySlug(slug);
-    return { slug: space.slug, name: space.name, spec: space.spec };
+    return { slug: space.slug, name: space.name, kind: space.kind, spec: space.spec };
   }
 
   /** The full entity, by slug, regardless of workspace (runtime use). */
@@ -268,9 +374,27 @@ export class SpacesService {
     return entity;
   }
 
-  private async findBySlugForWorkspace(workspaceId: string, slug: string): Promise<Space> {
+  private async findAppForWorkspace(workspaceId: string, slug: string): Promise<Space> {
     const space = await this.spaceRepository.findOne({ where: { slug, workspaceId } });
     if (!space) throw new NotFoundException('Space not found');
+    if (space.kind === 'page') {
+      throw new BadRequestException(`"${slug}" is a page, not an app. Change it with update_page`);
+    }
+    return space;
+  }
+
+  private async findPageForWorkspace(workspaceId: string, slug: string): Promise<Space> {
+    const space = await this.spaceRepository
+      .createQueryBuilder('space')
+      .addSelect('space.html')
+      .where('space.slug = :slug AND space.workspaceId = :workspaceId', { slug, workspaceId })
+      .getOne();
+    if (!space) throw new NotFoundException('Page not found');
+    if (space.kind !== 'page') {
+      throw new BadRequestException(
+        `"${slug}" is an app, not a page. Change it with update_space or add_space_records`,
+      );
+    }
     return space;
   }
 
@@ -299,6 +423,7 @@ export class SpacesService {
       name: space.name,
       description: space.description,
       status: space.status,
+      kind: space.kind,
       url: this.spaceUrl(space.slug),
       entityCount: space.spec.entities.length,
       viewCount: space.spec.views.length,
@@ -306,4 +431,15 @@ export class SpacesService {
       updatedAt: space.updatedAt,
     };
   }
+}
+
+/** The spec a page carries: no entities or views, only who may sign in. */
+function pageSpec(name: string, description: string | null, allowSignup: boolean): AppSpec {
+  return {
+    name,
+    ...(description ? { description } : {}),
+    entities: [],
+    views: [],
+    auth: { mode: 'magic-link', allowSignup },
+  };
 }

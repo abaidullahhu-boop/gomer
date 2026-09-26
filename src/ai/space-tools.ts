@@ -1,9 +1,10 @@
 import type { ToolSpec } from './providers/provider.interface';
 
 /**
- * Local (client-side) tools that let Gaspo build Spaces — spec-driven web apps.
- * Unlike the Pipedream MCP tools (executed server-side by the connector), these
- * are executed by AiService against SpacesService and their results fed back.
+ * Local (client-side) tools that let Gaspo build Spaces: spec-driven web apps,
+ * and pages it writes as whole HTML documents. Unlike the Pipedream MCP tools
+ * (executed server-side by the connector), these are executed by AiService
+ * against SpacesService and their results fed back.
  *
  * The input schema mirrors the AppSpec contract; the backend re-validates every
  * spec before persisting, so this schema is a guide for the model, not the gate.
@@ -129,4 +130,94 @@ export const ADD_SPACE_RECORDS_TOOL: ToolSpec = {
   },
 };
 
-export const SPACE_TOOLS = [CREATE_SPACE_TOOL, UPDATE_SPACE_TOOL, ADD_SPACE_RECORDS_TOOL];
+export const CREATE_PAGE_TOOL: ToolSpec = {
+  name: 'create_page',
+  description:
+    'Build and publish a designed web page for the workspace: a plan or gameplan, strategy, ' +
+    'report, calculator, or a dashboard that presents analysis. People read it and use it, and ' +
+    'it should look like a polished Claude artifact, not a form. You write the whole page as ' +
+    'one HTML document. Returns the live URL, private to this team.\n\n' +
+    'How to write it:\n' +
+    '- One complete, self-contained HTML document with inline <style> and <script>. Scripts ' +
+    'and stylesheets may load only from cdn.jsdelivr.net, cdnjs.cloudflare.com, unpkg.com, ' +
+    'esm.sh or cdn.tailwindcss.com, and fonts from Google Fonts. The page cannot make network ' +
+    'requests (fetch is blocked), so put every figure and table in the page itself.\n' +
+    '- Design it like a well-made product page: a hero that states the outcome, three or four ' +
+    'headline stat cards, a sticky section nav, then sections that each open with a one-line ' +
+    'point. Use cards, tables, step flows, callouts and charts (Chart.js) wherever they carry ' +
+    'information. Neutral colours with one accent, generous spacing, a centred column about ' +
+    '1100px wide, and a clear type scale. It must work at phone width with nothing wider than ' +
+    'the screen: stack grids, put wide tables in a sideways-scrolling wrapper, and let the ' +
+    'section nav scroll sideways.\n' +
+    "- Write it with an expert's substance, not a generic outline: specific numbers, targets, " +
+    'thresholds and examples throughout, and the decisions a reader has to make.\n' +
+    '- If it has a calculator or model, compute every figure from the default inputs as the page ' +
+    'loads and recalculate on every change. Never ship placeholders like "–" or empty tables.\n' +
+    '- Ground it in this workspace: when a connected app holds relevant numbers (e.g. Meta Ads ' +
+    'spend and cost per result), fetch them first and use them, and say which figures are ' +
+    'measured and which are assumptions.\n' +
+    '- Checkboxes are remembered for the whole team automatically; give each a stable id. To ' +
+    'remember anything else (e.g. calculator inputs), call window.gaspo.state.get(key) and ' +
+    'window.gaspo.state.set(key, value); localStorage also works and is saved the same way.\n' +
+    '- Keep it under 60 KB.',
+  parameters: {
+    type: 'object',
+    properties: {
+      name: { type: 'string', description: 'The page title, shown to people who open it.' },
+      description: { type: 'string', description: 'One line on what the page is for.' },
+      html: { type: 'string', description: 'The whole page as one HTML document.' },
+      allowSignup: {
+        type: 'boolean',
+        description: 'If true anyone with the link may sign in; by default only this team can.',
+      },
+    },
+    required: ['name', 'html'],
+  },
+};
+
+export const UPDATE_PAGE_TOOL: ToolSpec = {
+  name: 'update_page',
+  description:
+    'Change a page built with create_page. For a targeted fix, pass edits: exact find/replace ' +
+    'pairs applied in order, each find copied from the current page (read it with get_page) and ' +
+    'matching exactly once. To rework it, pass html: the whole new document. The rules for ' +
+    'writing a page in create_page still apply.',
+  parameters: {
+    type: 'object',
+    properties: {
+      slug: { type: 'string', description: 'The last part of the page URL.' },
+      edits: {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: { find: { type: 'string' }, replace: { type: 'string' } },
+          required: ['find', 'replace'],
+        },
+      },
+      html: { type: 'string', description: 'The whole new page, replacing the old one.' },
+      name: { type: 'string', description: 'A new title, if it should change.' },
+    },
+    required: ['slug'],
+  },
+};
+
+export const GET_PAGE_TOOL: ToolSpec = {
+  name: 'get_page',
+  description:
+    'Read the current HTML of a page built with create_page, before changing it with ' +
+    'update_page. Give the slug: the last part of the page URL.',
+  parameters: {
+    type: 'object',
+    properties: { slug: { type: 'string' } },
+    required: ['slug'],
+  },
+};
+
+export const SPACE_TOOLS = [
+  CREATE_SPACE_TOOL,
+  UPDATE_SPACE_TOOL,
+  ADD_SPACE_RECORDS_TOOL,
+  CREATE_PAGE_TOOL,
+  UPDATE_PAGE_TOOL,
+  GET_PAGE_TOOL,
+];

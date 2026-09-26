@@ -17,7 +17,13 @@ import {
 /** Beta flag enabling the remote MCP connector on the Messages API. */
 const MCP_BETA = 'mcp-client-2025-11-20';
 
-const MAX_TOKENS = 8000;
+/**
+ * Room for the longest single reply: a page Gaspo writes is one tool call
+ * holding the whole HTML document, often 15K tokens after thinking. Streamed,
+ * because the SDK refuses a non-streamed request whose limit could run past
+ * ten minutes, and a long silent request is the one a proxy drops.
+ */
+const MAX_TOKENS = 32000;
 
 /**
  * Marks a cache breakpoint: everything rendered before it is stored and, on a
@@ -99,22 +105,24 @@ export class AnthropicProvider implements LlmProvider {
 
     let response: Anthropic.Beta.BetaMessage;
     try {
-      response = await client.beta.messages.create({
-        model: request.model,
-        max_tokens: MAX_TOKENS,
-        // Pre-4.6 models reject the parameter outright, so it is opt-in per model.
-        ...(request.capabilities.adaptiveThinking
-          ? { thinking: { type: 'adaptive' as const } }
-          : {}),
-        // Tools render before the system prompt and both are identical on every
-        // turn of a run, so one breakpoint here caches that entire prefix — the
-        // bulk of what we send. Volatile content (the transcript) comes after it.
-        system: [{ type: 'text', text: request.system, cache_control: CACHE }],
-        messages: this.withTranscriptCache(this.toAnthropicMessages(request.messages)),
-        ...(tools.length ? { tools } : {}),
-        ...(mcpServers.length ? { mcp_servers: mcpServers } : {}),
-        betas: [MCP_BETA],
-      });
+      response = await client.beta.messages
+        .stream({
+          model: request.model,
+          max_tokens: MAX_TOKENS,
+          // Pre-4.6 models reject the parameter outright, so it is opt-in per model.
+          ...(request.capabilities.adaptiveThinking
+            ? { thinking: { type: 'adaptive' as const } }
+            : {}),
+          // Tools render before the system prompt and both are identical on every
+          // turn of a run, so one breakpoint here caches that entire prefix — the
+          // bulk of what we send. Volatile content (the transcript) comes after it.
+          system: [{ type: 'text', text: request.system, cache_control: CACHE }],
+          messages: this.withTranscriptCache(this.toAnthropicMessages(request.messages)),
+          ...(tools.length ? { tools } : {}),
+          ...(mcpServers.length ? { mcp_servers: mcpServers } : {}),
+          betas: [MCP_BETA],
+        })
+        .finalMessage();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.error(`Anthropic request failed: ${message}`);
@@ -222,7 +230,8 @@ export class AnthropicProvider implements LlmProvider {
     }
 
     let stopReason: ProviderStopReason = 'end';
-    if (response.stop_reason === 'tool_use' && toolCalls.length) stopReason = 'tool_use';
+    if (response.stop_reason === 'max_tokens') stopReason = 'truncated';
+    else if (response.stop_reason === 'tool_use' && toolCalls.length) stopReason = 'tool_use';
     else if (response.stop_reason === 'pause_turn') stopReason = 'pause';
 
     // Anthropic reports cached tokens separately and leaves them out of

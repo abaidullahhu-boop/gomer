@@ -87,9 +87,10 @@ export interface ProviderRequest {
 /**
  * Why the model stopped. `pause` means the provider hit its own per-turn
  * iteration cap mid-work and the accumulated conversation should be re-sent
- * unchanged (Anthropic's `pause_turn`).
+ * unchanged (Anthropic's `pause_turn`). `truncated` means the reply ran into the
+ * output limit, so any tool call in it may be cut off partway.
  */
-export type ProviderStopReason = 'end' | 'tool_use' | 'pause';
+export type ProviderStopReason = 'end' | 'tool_use' | 'pause' | 'truncated';
 
 /** A tool the provider ran on its own side, recorded for the run's audit trail. */
 export interface RemoteToolActivity {

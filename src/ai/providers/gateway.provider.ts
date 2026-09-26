@@ -96,8 +96,10 @@ export class GatewayProvider implements LlmProvider {
     }
 
     // Some gateways report `stop` even when tool calls are present, so the calls
-    // themselves decide whether the run continues rather than the finish reason.
-    const stopReason: ProviderStopReason = toolCalls.length ? 'tool_use' : 'end';
+    // themselves decide whether the run continues rather than the finish reason,
+    // except `length`: the reply was cut off, and so may any call in it be.
+    let stopReason: ProviderStopReason = toolCalls.length ? 'tool_use' : 'end';
+    if (choice?.finish_reason === 'length') stopReason = 'truncated';
 
     return {
       text: choice?.message?.content ?? '',
