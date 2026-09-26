@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { BadRequestException } from '@nestjs/common';
+import { BadGatewayException, BadRequestException } from '@nestjs/common';
 import { UserRole } from '../common/enums';
 import { User } from '../database/entities';
-import { SlackEmailLookup } from '../slack/interfaces/slack-oauth.interface';
-import { InvitesService, isPendingInvite, normalizeEmails } from './invites.service';
+import { SlackEmailLookup, SlackTeamMember } from '../slack/interfaces/slack-oauth.interface';
+import { InvitesService, isPendingInvite, normalizeEmails, rosterStatus } from './invites.service';
 
 test('normalizeEmails lower-cases, trims and de-duplicates in first-seen order', () => {
   assert.deepEqual(
@@ -42,6 +42,8 @@ function harness(options: {
   members?: User[];
   lookups?: Record<string, SlackEmailLookup>;
   deliverOk?: boolean;
+  /** What users.list returns; null means Slack did not answer. */
+  slackMembers?: SlackTeamMember[] | null;
 }) {
   const provisioned: Array<{ slackUserId: string; email: string | null }> = [];
   const delivered: string[] = [];
@@ -69,6 +71,7 @@ function harness(options: {
   const slackService = {
     lookupUserByEmail: async (_token: string, email: string): Promise<SlackEmailLookup> =>
       options.lookups?.[email] ?? { status: 'not_found' },
+    listMembers: async () => (options.slackMembers === undefined ? [] : options.slackMembers),
     deliver: async (_token: string, userId: string) => {
       delivered.push(userId);
       return options.deliverOk === false ? null : '1.0';
@@ -184,4 +187,59 @@ test('still adds the member when the DM cannot be sent, and says so', async () =
   assert.equal(result.status, 'invited');
   assert.equal(result.notified, false);
   assert.match(result.message, /https:\/\/gaspo\.co\/sign-in/);
+});
+
+test('rosterStatus: signed in, invited and unseen, or not on Gaspo', () => {
+  const now = new Date();
+  assert.equal(rosterStatus(undefined), 'not_on_gaspo');
+  assert.equal(
+    rosterStatus({ isActive: false, invitedAt: null, lastActiveAt: now }),
+    'not_on_gaspo',
+  );
+  assert.equal(rosterStatus({ isActive: true, invitedAt: now, lastActiveAt: null }), 'invited');
+  assert.equal(rosterStatus({ isActive: true, invitedAt: now, lastActiveAt: now }), 'on_gaspo');
+  assert.equal(rosterStatus({ isActive: true, invitedAt: null, lastActiveAt: now }), 'on_gaspo');
+});
+
+const slackPerson = (id: string, name: string, email: string | null = null): SlackTeamMember => ({
+  id,
+  name,
+  email,
+  avatarUrl: null,
+});
+
+test('slackRoster marks each Slack teammate by Slack id and sorts by name', async () => {
+  const { service } = harness({
+    members: [
+      // Email changed in Slack since joining: still matched by Slack id.
+      member({ slackUserId: 'U_ALICE', name: 'Alice', email: 'old-alice@example.com' }),
+      member({ slackUserId: 'U_BOB', name: 'Bob', invitedAt: new Date(), lastActiveAt: null }),
+      member({ slackUserId: 'U_DAVE', name: 'Dave', isActive: false }),
+    ],
+    slackMembers: [
+      slackPerson('U_DAVE', 'Dave', 'dave@example.com'),
+      slackPerson('U_CAROL', 'Carol', 'carol@example.com'),
+      slackPerson('U_BOB', 'Bob', 'bob@example.com'),
+      slackPerson('U_ALICE', 'Alice', 'alice@example.com'),
+    ],
+  });
+
+  const roster = await service.slackRoster('ws');
+  assert.deepEqual(
+    roster.map((r) => [r.name, r.email, r.status]),
+    [
+      ['Alice', 'alice@example.com', 'on_gaspo'],
+      ['Bob', 'bob@example.com', 'invited'],
+      ['Carol', 'carol@example.com', 'not_on_gaspo'],
+      ['Dave', 'dave@example.com', 'not_on_gaspo'],
+    ],
+  );
+});
+
+test('slackRoster refuses without a bot token and reports a Slack outage', async () => {
+  await assert.rejects(harness({ botToken: null }).service.slackRoster('ws'), BadRequestException);
+  await assert.rejects(
+    harness({ slackMembers: null }).service.slackRoster('ws'),
+    BadGatewayException,
+  );
 });

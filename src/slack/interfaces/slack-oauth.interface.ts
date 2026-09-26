@@ -73,6 +73,15 @@ export type SlackEmailLookup =
   | { status: 'not_found' }
   | { status: 'error'; error: string };
 
+/** A person on the workspace's Slack team, as `users.list` reports them. */
+export interface SlackTeamMember {
+  id: string;
+  name: string;
+  /** Null when Slack withholds it (the `users:read.email` scope is missing). */
+  email: string | null;
+  avatarUrl: string | null;
+}
+
 /** Normalized Slack identity used by the auth flow. */
 export interface SlackIdentity {
   slackTeamId: string;

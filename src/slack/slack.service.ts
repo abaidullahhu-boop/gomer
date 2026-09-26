@@ -9,9 +9,16 @@ import {
   SlackEmailLookup,
   SlackIdentity,
   SlackOAuthAccessResponse,
+  SlackTeamMember,
   SlackUserInfoResponse,
   SlackUserLookupResponse,
 } from './interfaces/slack-oauth.interface';
+
+/** The name a Slack member goes by: display name, then real name, then handle. */
+function slackDisplayName(user: NonNullable<SlackUserLookupResponse['user']>): string {
+  const profile = user.profile ?? {};
+  return profile.display_name || profile.real_name || user.real_name || user.name || user.id;
+}
 
 /**
  * Wrapper over the Slack Web API: the OAuth install/exchange flow, request
@@ -260,21 +267,28 @@ export class SlackService {
     }
   }
 
-  /**
-   * Count the human members of the Slack workspace (users.list), excluding bots,
-   * Slackbot, and deactivated accounts. Paginates through every page. Needs the
-   * `users:read` scope. Best-effort: returns null on failure so callers degrade.
-   */
+  /** Count the human members of the Slack workspace. Null on failure, like `listMembers`. */
   async countMembers(botToken: string): Promise<number | null> {
+    const members = await this.listMembers(botToken);
+    return members === null ? null : members.length;
+  }
+
+  /**
+   * The human members of the Slack workspace (users.list), excluding bots,
+   * Slackbot, and deactivated accounts. Paginates through every page. Needs the
+   * `users:read` scope, plus `users:read.email` for the addresses.
+   * Best-effort: returns null on failure so callers degrade.
+   */
+  async listMembers(botToken: string): Promise<SlackTeamMember[] | null> {
     try {
       let cursor: string | undefined;
-      let count = 0;
+      const members: SlackTeamMember[] = [];
       do {
         const response = await firstValueFrom(
           this.httpService.get<{
             ok: boolean;
             error?: string;
-            members?: Array<{ id?: string; is_bot?: boolean; deleted?: boolean }>;
+            members?: Array<NonNullable<SlackUserLookupResponse['user']>>;
             response_metadata?: { next_cursor?: string };
           }>(`${SLACK_API_BASE_URL}/users.list`, {
             params: { limit: 200, ...(cursor ? { cursor } : {}) },
@@ -287,11 +301,17 @@ export class SlackService {
         }
         for (const member of response.data.members ?? []) {
           if (member.is_bot || member.deleted || member.id === 'USLACKBOT') continue;
-          count += 1;
+          const profile = member.profile ?? {};
+          members.push({
+            id: member.id,
+            name: slackDisplayName(member),
+            email: profile.email ?? null,
+            avatarUrl: profile.image_192 ?? profile.image_512 ?? null,
+          });
         }
         cursor = response.data.response_metadata?.next_cursor || undefined;
       } while (cursor);
-      return count;
+      return members;
     } catch (error) {
       this.logger.warn(
         `users.list error: ${error instanceof Error ? error.message : String(error)}`,
@@ -326,7 +346,7 @@ export class SlackService {
       return {
         status: 'found',
         id: user.id,
-        name: profile.display_name || profile.real_name || user.real_name || user.name || user.id,
+        name: slackDisplayName(user),
         email: profile.email ?? email,
         avatarUrl: profile.image_512 ?? profile.image_192 ?? null,
         deleted: user.deleted === true,
