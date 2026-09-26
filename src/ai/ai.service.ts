@@ -117,6 +117,28 @@ const LOW_BALANCE_NUDGE_TTL_SECONDS = 6 * 60 * 60;
 const LOW_BALANCE_PREFIX = 'ai:lowbalance:';
 
 /**
+ * Retries allowed after a reply is cut off mid tool call. One, because a retry
+ * of a whole page can cost as much as the first attempt, and a model that ran
+ * out of room twice needs the request made smaller, not a third try.
+ */
+const MAX_TRUNCATED_RETRIES = 1;
+
+/** Said when a reply keeps outgrowing the output limit and the run gives up on it. */
+const TRUNCATED_ANSWER =
+  'That was too long for me to write in one reply, so I stopped rather than publish it cut off. ' +
+  'Ask for a shorter version, or for it in parts and I will add each part to the page.';
+
+/** What each Spaces tool was doing, for the error result when it fails. */
+const SPACE_TOOL_ACTIONS: Record<string, string> = {
+  create_space: 'build the Space',
+  update_space: 'update the Space',
+  add_space_records: 'add rows to the Space',
+  create_page: 'build the page',
+  update_page: 'change the page',
+  get_page: 'read the page',
+};
+
+/**
  * Local (custom) tools AiService executes itself: building/updating Spaces and
  * reading workspace facts. Sent on every run alongside any connected-app MCP
  * toolsets, and kept as the sole tools when the MCP connector is dropped.
@@ -125,7 +147,7 @@ const LOCAL_TOOLS: ToolSpec[] = [...SPACE_TOOLS, ...WORKSPACE_TOOLS, ...MEMORY_T
 
 const SYSTEM_PROMPT = `You are Gaspo, an AI assistant for a workspace. You can take actions across the user's connected apps using the available tools. Prefer acting over describing: when a request maps to a tool, use it. When you lack a connected app needed for a request, say so plainly and name the app to connect. Before any action that creates, edits, deletes, or starts spending on a connected app — especially Meta Ads campaigns (creating, activating, changing budgets, or deleting) — state exactly what you will do and get the user's explicit confirmation first; never perform such actions speculatively.
 
-You can also build "Spaces" — full web apps with their own database, passwordless (magic-link) login, and hosting — using the create_space tool. Spaces suit CRUD/form/dashboard internal tools (e.g. a time logger, lead tracker, or content calendar). Describe the app as entities (data types with typed fields) and views (forms, tables, dashboards). When the app is meant to hold content you are writing for the user — the steps of a plan or gameplan, a checklist, a roadmap, a content calendar — put that content in it as starting rows with create_space's records, so it opens filled in rather than empty; to fill an app that already exists, use add_space_records. Never invent or share end-user passwords; logins are always magic links. After building a Space, give the user its link and tell them how to get in: anyone on this team who is signed in to the Gaspo dashboard opens it signed in straight away, and otherwise they enter the email on their Slack profile and get a sign-in link from you as a Slack DM. Gaspo cannot email sign-in links, so people outside this team's Slack cannot sign in yet — never tell anyone to check their email.
+You can also build web apps for the workspace, each hosted at its own link with passwordless (magic-link) login, and there are two kinds. For something people read and use — a plan or gameplan, strategy, report, calculator, or a dashboard that presents analysis — build a page with create_page: you write the whole page as HTML, designed to the standard of a polished Claude artifact. For a tool where people keep entering and tracking records over time — a time logger, lead tracker, or content calendar — build an app with create_space, described as entities (data types with typed fields) and views (forms, tables, dashboards); when it should start with content, such as a checklist's items, put that in as starting rows with its records, and fill an existing app with add_space_records. When someone asks for a plan, gameplan or dashboard, build a page. Never invent or share end-user passwords; logins are always magic links. After building either, give the user its link and tell them how to get in: anyone on this team who is signed in to the Gaspo dashboard opens it signed in straight away, and otherwise they enter the email on their Slack profile and get a sign-in link from you as a Slack DM. Gaspo cannot email sign-in links, so people outside this team's Slack cannot sign in yet — never tell anyone to check their email.
 
 You can also answer questions about this workspace itself — how many members it has and which apps members have connected — with the get_workspace_stats tool. Use it instead of guessing or saying you have no way to know.
 
@@ -752,6 +774,8 @@ export class AiService {
     // stays distinguishable from "reported nothing".
     let costUsd: number | undefined;
     let resolvedModel: string | undefined;
+    // Replies cut off mid tool call so far, capped by MAX_TRUNCATED_RETRIES.
+    let truncations = 0;
 
     // Two reasons to loop: a provider returns `pause` when it hits its own
     // per-turn iteration cap, and any tool call needs answering — in both cases
@@ -820,6 +844,37 @@ export class AiService {
           results.push(result);
         }
         messages.push({ role: 'tool', results });
+        continue;
+      }
+
+      if (response.stopReason === 'truncated' && response.toolCalls.length) {
+        // The reply hit the output limit partway through a tool call. It is never
+        // run, since a page cut off mid-document would publish broken; the model
+        // is told instead, so it can try again with less.
+        truncations += 1;
+        if (truncations > MAX_TRUNCATED_RETRIES) {
+          this.logger.warn('A reply hit the output limit again; giving up on it');
+          answer += `${answer.trim() ? '\n\n' : ''}${TRUNCATED_ANSWER}`;
+          break;
+        }
+        messages.push({
+          role: 'assistant',
+          content: response.text,
+          toolCalls: response.toolCalls,
+          raw: response.raw,
+        });
+        messages.push({
+          role: 'tool',
+          results: response.toolCalls.map((call) => ({
+            id: call.id,
+            name: call.name,
+            content:
+              'Not run: your reply reached the output limit before this call was complete. ' +
+              'Try again with less, e.g. a shorter page, or build it and then add to it with edits.',
+            isError: true,
+          })),
+        });
+        this.logger.warn('A reply hit the output limit mid tool call; asked the model to retry');
         continue;
       }
 
@@ -1640,9 +1695,24 @@ export class AiService {
   ): Promise<LocalToolResult> {
     const input = (toolUse.input ?? {}) as Record<string, unknown>;
     try {
+      if (toolUse.name === 'get_page') {
+        const page = await this.spacesService.readPage(workspaceId, String(input.slug));
+        const url = this.spacesService.spaceUrl(page.slug);
+        return {
+          type: 'tool_result',
+          tool_use_id: toolUse.id,
+          content: `Page "${page.name}" at ${url}. Its current HTML:\n\n${page.html ?? ''}`,
+        };
+      }
       let space: Space;
       let summary: (url: string) => string;
-      if (toolUse.name === 'update_space') {
+      if (toolUse.name === 'create_page') {
+        space = await this.spacesService.createPage(workspaceId, userId, input);
+        summary = (url) => `Page "${space.name}" is live at ${url}`;
+      } else if (toolUse.name === 'update_page') {
+        space = await this.spacesService.updatePage(workspaceId, String(input.slug), input);
+        summary = (url) => `Updated page "${space.name}" at ${url}`;
+      } else if (toolUse.name === 'update_space') {
         const { slug: target, ...spec } = input;
         space = await this.spacesService.updateSpec(workspaceId, String(target), spec);
         summary = (url) => `Space "${space.name}" is live at ${url}`;
@@ -1674,12 +1744,10 @@ export class AiService {
       const reasons = validationReasons(error);
       const detail = reasons.length > 0 ? `${message}:\n- ${reasons.join('\n- ')}` : message;
       this.logger.warn(`Space tool ${toolUse.name} failed: ${detail}`);
-      const action =
-        toolUse.name === 'add_space_records' ? 'add rows to the Space' : 'build the Space';
       return {
         type: 'tool_result',
         tool_use_id: toolUse.id,
-        content: `Failed to ${action}: ${detail}`,
+        content: `Failed to ${SPACE_TOOL_ACTIONS[toolUse.name] ?? 'build the Space'}: ${detail}`,
         is_error: true,
       };
     }

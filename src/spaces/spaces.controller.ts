@@ -14,10 +14,10 @@ import { ApiTags } from '@nestjs/swagger';
 import { CurrentUser, Public, RateLimit } from '../common/decorators';
 import { AuthenticatedUser } from '../common/interfaces';
 import { SpaceRecord, SpaceUser } from '../database/entities';
-import { RecordDataDto, RequestMagicLinkDto } from './dto';
+import { PageStateDto, RecordDataDto, RequestMagicLinkDto } from './dto';
 import { SpaceAuthGuard, SpaceRequest } from './guards/space-auth.guard';
 import { RequestLinkResult, SpaceSessionResult, SpacesAuthService } from './spaces-auth.service';
-import { PublicSpaceView, SpacesService, SpaceView } from './spaces.service';
+import { PageDocument, PublicSpaceView, SpacesService, SpaceView } from './spaces.service';
 
 @ApiTags('spaces')
 @Controller('spaces')
@@ -153,5 +153,29 @@ export class SpacesController {
     @Param('recordId') recordId: string,
   ): Promise<{ success: boolean }> {
     return this.spacesService.deleteRecord(req.space, entity, recordId);
+  }
+
+  // ---- Runtime: pages (space session JWT) ----------------------------------
+
+  /**
+   * A page's HTML and saved state. Behind the session like app data, since a
+   * plan can carry real numbers: the public route only ever names the page.
+   */
+  @Public()
+  @UseGuards(SpaceAuthGuard)
+  @Get(':slug/page')
+  page(@Req() req: SpaceRequest): Promise<PageDocument> {
+    return this.spacesService.pageDocument(req.space);
+  }
+
+  /** Save one key of what a page remembers (a ticked step, an input). */
+  @Public()
+  @UseGuards(SpaceAuthGuard)
+  @Put(':slug/page/state')
+  savePageState(
+    @Req() req: SpaceRequest,
+    @Body() dto: PageStateDto,
+  ): Promise<{ success: boolean }> {
+    return this.spacesService.savePageState(req.space, dto.key, dto.value);
   }
 }
