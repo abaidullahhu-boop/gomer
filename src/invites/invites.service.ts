@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadGatewayException, BadRequestException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { AppConfig } from '../config/configuration';
 import { User } from '../database/entities';
@@ -31,6 +31,22 @@ export interface InviteResult {
   message: string;
 }
 
+/**
+ * Where a Slack teammate stands with Gaspo: signed in, invited but not seen
+ * yet, or not on Gaspo at all (never added, or deactivated by an admin).
+ */
+export type SlackRosterStatus = 'on_gaspo' | 'invited' | 'not_on_gaspo';
+
+/** One person on the workspace's Slack team, for the Team page's roster. */
+export interface SlackRosterEntry {
+  slackUserId: string;
+  name: string;
+  /** Null when Slack withholds it; such a person cannot be invited by email. */
+  email: string | null;
+  avatarUrl: string | null;
+  status: SlackRosterStatus;
+}
+
 /** Addresses per request: each costs a Slack lookup and a DM. */
 export const MAX_INVITES_PER_REQUEST = 25;
 
@@ -52,6 +68,14 @@ export function isPendingInvite(
   user: Pick<User, 'isActive' | 'invitedAt' | 'lastActiveAt'>,
 ): boolean {
   return user.isActive && user.invitedAt !== null && user.lastActiveAt === null;
+}
+
+/** Where the Gaspo member behind a Slack teammate stands, if there is one. */
+export function rosterStatus(
+  user: Pick<User, 'isActive' | 'invitedAt' | 'lastActiveAt'> | undefined,
+): SlackRosterStatus {
+  if (!user || !user.isActive) return 'not_on_gaspo';
+  return isPendingInvite(user) ? 'invited' : 'on_gaspo';
 }
 
 interface InviteBatch {
@@ -114,6 +138,41 @@ export class InvitesService {
       results.push(await this.inviteOne(batch, email));
     }
     return results;
+  }
+
+  /**
+   * Everyone on the workspace's Slack team, each marked with where they stand
+   * with Gaspo, so an admin can invite the ones who are not on it yet without
+   * typing their addresses. Matched on Slack id, not email: an address may have
+   * changed in Slack since the person was added.
+   */
+  async slackRoster(workspaceId: string): Promise<SlackRosterEntry[]> {
+    const workspace = await this.workspacesService.findByIdOrFail(workspaceId);
+    if (!workspace.slackBotToken) {
+      throw new BadRequestException(
+        'Gaspo is not installed in your Slack workspace. Reinstall it from the sign-in page.',
+      );
+    }
+
+    const slackMembers = await this.slackService.listMembers(workspace.slackBotToken);
+    if (slackMembers === null) {
+      throw new BadGatewayException("Slack didn't answer. Try again in a minute.");
+    }
+
+    const bySlackId = new Map<string, User>();
+    for (const member of await this.usersService.listAllByWorkspace(workspaceId)) {
+      bySlackId.set(member.slackUserId, member);
+    }
+
+    return slackMembers
+      .map((person) => ({
+        slackUserId: person.id,
+        name: person.name,
+        email: person.email,
+        avatarUrl: person.avatarUrl,
+        status: rosterStatus(bySlackId.get(person.id)),
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
   }
 
   private async inviteOne(batch: InviteBatch, email: string): Promise<InviteResult> {
