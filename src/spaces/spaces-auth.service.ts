@@ -1,9 +1,4 @@
-import {
-  ForbiddenException,
-  Injectable,
-  NotFoundException,
-  UnauthorizedException,
-} from '@nestjs/common';
+import { ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { InjectRepository } from '@nestjs/typeorm';
@@ -13,6 +8,7 @@ import { LessThan, Repository } from 'typeorm';
 import { AppConfig } from '../config/configuration';
 import { SpaceAuthToken, SpaceUser } from '../database/entities';
 import { UsersService } from '../users/users.service';
+import { WorkspacesService } from '../workspaces/workspaces.service';
 import { SpacesLinkDeliveryService } from './spaces-link-delivery.service';
 import { SpacesService } from './spaces.service';
 
@@ -62,6 +58,7 @@ export class SpacesAuthService {
     private readonly spaceUserRepository: Repository<SpaceUser>,
     private readonly spacesService: SpacesService,
     private readonly usersService: UsersService,
+    private readonly workspacesService: WorkspacesService,
     private readonly delivery: SpacesLinkDeliveryService,
     private readonly jwtService: JwtService,
     private readonly configService: ConfigService<AppConfig, true>,
@@ -108,8 +105,10 @@ export class SpacesAuthService {
 
   /**
    * Sign a member of the owning workspace straight into a Space, with no link:
-   * their dashboard session already proves who they are. A Space that belongs
-   * to another workspace answers exactly like a missing one.
+   * their dashboard session already proves who they are. Someone signed in to a
+   * different workspace is told so, since otherwise the sign-in form comes back
+   * with no reason. That reveals nothing new: the public spec endpoint already
+   * answers for any slug, and only their own workspace is named.
    */
   async workspaceSession(
     slug: string,
@@ -117,7 +116,14 @@ export class SpacesAuthService {
     userId: string,
   ): Promise<SpaceSessionResult> {
     const space = await this.spacesService.findPublishedBySlug(slug);
-    if (space.workspaceId !== workspaceId) throw new NotFoundException('Space not found');
+    if (space.workspaceId !== workspaceId) {
+      const current = await this.workspacesService.findById(workspaceId);
+      const signedInTo = current?.name ? `the ${current.name} workspace` : 'another workspace';
+      throw new ForbiddenException(
+        `You’re signed in to Gaspo on ${signedInTo}, but this app belongs to a different one. ` +
+          'Sign in below with the email on that team’s Slack, or sign in to Gaspo with Slack on that workspace.',
+      );
+    }
 
     const user = await this.usersService.findById(userId);
     if (!user?.isActive) throw new UnauthorizedException('Your Gaspo account is not active');

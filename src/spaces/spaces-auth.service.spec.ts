@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ForbiddenException, NotFoundException } from '@nestjs/common';
+import { ForbiddenException } from '@nestjs/common';
 import { Space, SpaceUser, User } from '../database/entities';
 import { SlackTeammate } from './spaces-link-delivery.service';
 import { SpacesAuthService } from './spaces-auth.service';
@@ -66,6 +66,9 @@ function harness(options: {
             ...options.user,
           } as User),
   };
+  const workspacesService = {
+    findById: async (id: string) => (id === 'ws-other' ? { id, name: 'Code Red' } : null),
+  };
   const delivery = {
     isDev: options.dev ?? false,
     findTeammate: async (_workspaceId: string, email: string) => options.teammates?.[email] ?? null,
@@ -82,6 +85,7 @@ function harness(options: {
     spaceUserRepository as never,
     spacesService as never,
     usersService as never,
+    workspacesService as never,
     delivery as never,
     jwtService as never,
     configService as never,
@@ -138,13 +142,15 @@ test('a workspace member is signed straight in and recorded as an app member', a
   assert.equal(members.get('matt@example.com')?.name, 'Matt');
 });
 
-test('a member of another workspace cannot tell the app exists', async () => {
-  const { service } = harness({});
+test('a member of another workspace is told which workspace they are signed in to', async () => {
+  const { service, members } = harness({});
 
-  await assert.rejects(
-    service.workspaceSession('time-log', 'ws-other', 'user-1'),
-    NotFoundException,
-  );
+  await assert.rejects(service.workspaceSession('time-log', 'ws-other', 'user-1'), (error) => {
+    assert.ok(error instanceof ForbiddenException);
+    assert.match(error.message, /signed in to Gaspo on the Code Red workspace/);
+    return true;
+  });
+  assert.equal(members.size, 0);
 });
 
 test('a member without an email is sent to the Slack sign-in instead', async () => {

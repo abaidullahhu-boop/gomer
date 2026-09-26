@@ -1,10 +1,11 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { EntityManager, In, Repository } from 'typeorm';
 import { AppConfig } from '../config/configuration';
 import { Space, SpaceRecord, SpaceUser } from '../database/entities';
 import { AppSpec, EntitySpec } from './spec/app-spec';
+import { describeApp, prepareSeedRecords, SeedRecord } from './spec/seed-records';
 import { validateAppSpec, validateRecordData } from './spec/validate-spec';
 
 /** A Space shaped for the dashboard list/detail. */
@@ -19,6 +20,12 @@ export interface SpaceView {
   viewCount: number;
   createdAt: Date;
   updatedAt: Date;
+}
+
+/** A Space plus how many rows a build or fill wrote into it. */
+export interface SeededSpace {
+  space: Space;
+  added: number;
 }
 
 /** A Space's public shape, served to the runtime to render the app. */
@@ -48,25 +55,63 @@ export class SpacesService {
 
   /**
    * Validate an AI-produced spec and persist it as a new Space for the
-   * workspace, assigning a unique URL slug derived from the app name.
+   * workspace, assigning a unique URL slug derived from the app name. Any
+   * starting rows are validated first and saved with the Space in one
+   * transaction, so a bad row never leaves an empty app behind.
    */
   async createFromSpec(
     workspaceId: string,
     userId: string | null,
     specInput: unknown,
-  ): Promise<Space> {
+    recordsInput?: unknown,
+  ): Promise<SeededSpace> {
     const spec = validateAppSpec(specInput);
+    const seeds = prepareSeedRecords(spec, recordsInput);
     const slug = await this.uniqueSlug(spec.name);
-    const space = this.spaceRepository.create({
-      workspaceId,
-      createdByUserId: userId,
-      slug,
-      name: spec.name,
-      description: spec.description ?? null,
-      spec,
-      status: 'published',
+    const space = await this.spaceRepository.manager.transaction(async (manager) => {
+      const saved = await manager.save(
+        manager.create(Space, {
+          workspaceId,
+          createdByUserId: userId,
+          slug,
+          name: spec.name,
+          description: spec.description ?? null,
+          spec,
+          status: 'published',
+        }),
+      );
+      await this.insertSeeds(manager, saved.id, seeds);
+      return saved;
     });
-    return this.spaceRepository.save(space);
+    return { space, added: seeds.length };
+  }
+
+  /**
+   * Add AI-written rows to an existing Space, e.g. to fill in an app that was
+   * built empty. A reference may name a row that is already in the app.
+   */
+  async addRecords(workspaceId: string, slug: string, recordsInput: unknown): Promise<SeededSpace> {
+    const space = await this.findBySlugForWorkspace(workspaceId, slug);
+    const targets = [
+      ...new Set(
+        space.spec.entities.flatMap((e) =>
+          e.fields.flatMap((f) => (f.type === 'reference' && f.refEntity ? [f.refEntity] : [])),
+        ),
+      ),
+    ];
+    const existing =
+      targets.length > 0
+        ? await this.recordRepository.find({
+            where: { spaceId: space.id, entityName: In(targets) },
+            select: { id: true, entityName: true, data: true },
+          })
+        : [];
+    const seeds = prepareSeedRecords(space.spec, recordsInput, existing);
+    if (seeds.length === 0) {
+      throw new BadRequestException(`records is empty. This app has ${describeApp(space.spec)}`);
+    }
+    await this.insertSeeds(this.recordRepository.manager, space.id, seeds);
+    return { space, added: seeds.length };
   }
 
   /** Replace the spec of an existing Space (re-validated). */
@@ -190,6 +235,31 @@ export class SpacesService {
   spaceUrl(slug: string): string {
     const frontendUrl = this.configService.get('app.frontendUrl', { infer: true });
     return `${frontendUrl.replace(/\/$/, '')}/s/${slug}`;
+  }
+
+  /**
+   * Write starting rows. Records list newest first, so each row is stamped a
+   * millisecond older than the one before it and the app shows them in the
+   * order they were written: the order a plan reads in.
+   */
+  private async insertSeeds(
+    manager: EntityManager,
+    spaceId: string,
+    seeds: SeedRecord[],
+  ): Promise<void> {
+    if (seeds.length === 0) return;
+    const now = Date.now();
+    await manager.save(
+      SpaceRecord,
+      seeds.map((seed, i) => ({
+        id: seed.id,
+        spaceId,
+        entityName: seed.entityName,
+        data: seed.data,
+        createdBySpaceUserId: null,
+        createdAt: new Date(now - i),
+      })),
+    );
   }
 
   private entityOrFail(space: Space, entityName: string): EntitySpec {

@@ -26,7 +26,7 @@ import {
 } from './providers/provider.interface';
 import { WorkspacesService } from '../workspaces/workspaces.service';
 import { CreditEventType } from '../common/enums';
-import type { ExportDataset } from '../database/entities';
+import type { ExportDataset, Space } from '../database/entities';
 import {
   ConnectedIntegrationView,
   IntegrationsService,
@@ -39,6 +39,7 @@ import { RoasService } from '../integrations/roas.service';
 import { ExportsService } from '../exports/exports.service';
 import { RulesService } from '../rules/rules.service';
 import { SpacesService } from '../spaces/spaces.service';
+import { validationReasons } from '../spaces/spec/validate-spec';
 import { CREDITS_PER_DOLLAR, UsageService } from '../usage/usage.service';
 import { UsersService } from '../users/users.service';
 import {
@@ -124,7 +125,7 @@ const LOCAL_TOOLS: ToolSpec[] = [...SPACE_TOOLS, ...WORKSPACE_TOOLS, ...MEMORY_T
 
 const SYSTEM_PROMPT = `You are Gaspo, an AI assistant for a workspace. You can take actions across the user's connected apps using the available tools. Prefer acting over describing: when a request maps to a tool, use it. When you lack a connected app needed for a request, say so plainly and name the app to connect. Before any action that creates, edits, deletes, or starts spending on a connected app — especially Meta Ads campaigns (creating, activating, changing budgets, or deleting) — state exactly what you will do and get the user's explicit confirmation first; never perform such actions speculatively.
 
-You can also build "Spaces" — full web apps with their own database, passwordless (magic-link) login, and hosting — using the create_space tool. Spaces suit CRUD/form/dashboard internal tools (e.g. a time logger, lead tracker, or content calendar). Describe the app as entities (data types with typed fields) and views (forms, tables, dashboards). Never invent or share end-user passwords; logins are always magic links. After building a Space, give the user its link and tell them how to get in: anyone on this team who is signed in to the Gaspo dashboard opens it signed in straight away, and otherwise they enter the email on their Slack profile and get a sign-in link from you as a Slack DM. Gaspo cannot email sign-in links, so people outside this team's Slack cannot sign in yet — never tell anyone to check their email.
+You can also build "Spaces" — full web apps with their own database, passwordless (magic-link) login, and hosting — using the create_space tool. Spaces suit CRUD/form/dashboard internal tools (e.g. a time logger, lead tracker, or content calendar). Describe the app as entities (data types with typed fields) and views (forms, tables, dashboards). When the app is meant to hold content you are writing for the user — the steps of a plan or gameplan, a checklist, a roadmap, a content calendar — put that content in it as starting rows with create_space's records, so it opens filled in rather than empty; to fill an app that already exists, use add_space_records. Never invent or share end-user passwords; logins are always magic links. After building a Space, give the user its link and tell them how to get in: anyone on this team who is signed in to the Gaspo dashboard opens it signed in straight away, and otherwise they enter the email on their Slack profile and get a sign-in link from you as a Slack DM. Gaspo cannot email sign-in links, so people outside this team's Slack cannot sign in yet — never tell anyone to check their email.
 
 You can also answer questions about this workspace itself — how many members it has and which apps members have connected — with the get_workspace_stats tool. Use it instead of guessing or saying you have no way to know.
 
@@ -1627,8 +1628,9 @@ export class AiService {
 
   /**
    * Execute a local Spaces tool call and return its tool_result. Creating a
-   * Space validates the AI's spec before persisting; a bad spec becomes an error
-   * result the model can read and correct, never a failed request.
+   * Space validates the AI's spec (and any starting rows) before persisting; a
+   * bad one becomes an error result listing each problem, which the model can
+   * read and correct, never a failed request.
    */
   private async runSpaceTool(
     workspaceId: string,
@@ -1638,32 +1640,46 @@ export class AiService {
   ): Promise<LocalToolResult> {
     const input = (toolUse.input ?? {}) as Record<string, unknown>;
     try {
-      let slug: string;
-      let name: string;
+      let space: Space;
+      let summary: (url: string) => string;
       if (toolUse.name === 'update_space') {
         const { slug: target, ...spec } = input;
-        const space = await this.spacesService.updateSpec(workspaceId, String(target), spec);
-        slug = space.slug;
-        name = space.name;
+        space = await this.spacesService.updateSpec(workspaceId, String(target), spec);
+        summary = (url) => `Space "${space.name}" is live at ${url}`;
+      } else if (toolUse.name === 'add_space_records') {
+        const result = await this.spacesService.addRecords(
+          workspaceId,
+          String(input.slug),
+          input.records,
+        );
+        space = result.space;
+        summary = (url) => `Added ${result.added} rows to Space "${space.name}" at ${url}`;
       } else {
-        const space = await this.spacesService.createFromSpec(workspaceId, userId, input);
-        slug = space.slug;
-        name = space.name;
+        const { records, ...spec } = input;
+        const result = await this.spacesService.createFromSpec(workspaceId, userId, spec, records);
+        space = result.space;
+        summary = (url) =>
+          `Space "${space.name}" is live at ${url}` +
+          (result.added > 0 ? ` with ${result.added} starting rows` : ' with no rows yet');
       }
-      const url = this.spacesService.spaceUrl(slug);
-      spaces.push({ slug, name, url });
+      const url = this.spacesService.spaceUrl(space.slug);
+      spaces.push({ slug: space.slug, name: space.name, url });
       return {
         type: 'tool_result',
         tool_use_id: toolUse.id,
-        content: `Space "${name}" is live at ${url}`,
+        content: summary(url),
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.logger.warn(`Space tool ${toolUse.name} failed: ${message}`);
+      const reasons = validationReasons(error);
+      const detail = reasons.length > 0 ? `${message}:\n- ${reasons.join('\n- ')}` : message;
+      this.logger.warn(`Space tool ${toolUse.name} failed: ${detail}`);
+      const action =
+        toolUse.name === 'add_space_records' ? 'add rows to the Space' : 'build the Space';
       return {
         type: 'tool_result',
         tool_use_id: toolUse.id,
-        content: `Failed to build the Space: ${message}`,
+        content: `Failed to ${action}: ${detail}`,
         is_error: true,
       };
     }
